@@ -1,0 +1,4 @@
+interface:
+  display_name: "Sub2API Group Monitor"
+  short_description: "Build resilient multi-site Sub2API group polling"
+  default_prompt: "Use $aiapibank-monitor-groups to add or verify a resilient group monitor for a Sub2API website."

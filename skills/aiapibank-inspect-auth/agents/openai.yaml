@@ -1,0 +1,4 @@
+interface:
+  display_name: "Sub2API Auth Inspector"
+  short_description: "Inspect authentication for compatible Sub2API sites"
+  default_prompt: "Use $aiapibank-inspect-auth to inspect authentication and API access for a Sub2API website."

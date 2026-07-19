@@ -1,0 +1,4 @@
+interface:
+  display_name: "Requests Idle Timeout Diagnosis"
+  short_description: "Diagnose stale pooled HTTP connections"
+  default_prompt: "Use $diagnose-requests-idle-timeout to reproduce and diagnose a timeout after an idle requests.Session."

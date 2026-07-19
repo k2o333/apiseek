@@ -1,0 +1,16 @@
+[Unit]
+Description=AIAPIBANK group monitor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/projects/zhongzhuan
+ExecStart=/root/projects/zhongzhuan/.venv/bin/python /root/projects/zhongzhuan/aiapibank_monitor.py --env-file /root/projects/zhongzhuan/config.env
+Restart=always
+RestartSec=10
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

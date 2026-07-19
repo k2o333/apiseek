@@ -1,0 +1,6 @@
+config.env
+pinaic.env
+.venv/
+data/
+__pycache__/
+*.pyc
