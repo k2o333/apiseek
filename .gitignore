@@ -1,6 +1,4 @@
 # Secrets and runtime data — never commit
-config.env
-pinaic.env
 sites/*.env
 !sites/*.env.example
 .venv/

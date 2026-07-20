@@ -1,70 +1,78 @@
 # Sub2API Monitor Contract
 
-The defaults below are verified for AIAPIBANK and PinAI. Verify each new sub2api deployment and record path or response-shape overrides in the site registry.
+Defaults below are verified for AIAPIBANK and PinAI. Verify each new sub2api deployment and record path overrides in that site's `sites/<id>.env`.
 
 ## Configuration
 
-Use these environment variables for legacy single-site operation. For multiple sites, use the YAML registry and per-site secret files described in `multi-site-architecture.md`.
+One env file per site: `sites/<site-id>.env` (mode `0600`). Load via:
 
-| Variable | Required | Default | Purpose |
-|---|---|---|---|
-| `AIAPIBANK_EMAIL` | Yes | - | Login email |
-| `AIAPIBANK_PASSWORD` | Yes | - | Login password |
-| `AIAPIBANK_BASE_URL` | No | `https://www.aiapibank.com` | Site base URL |
-| `POLL_INTERVAL_SECONDS` | No | `300` | Successful polling interval |
-| `DATA_DIR` | No | `data` | Snapshot/history directory |
-| `TOKEN_STATE_FILE` | No | `data/token_state.json` | Private token cache |
-| `LOG_LEVEL` | No | `INFO` | Console log level |
+```bash
+python3 sub2api_monitor.py --env-file sites/<site-id>.env [--validate|--once]
+```
 
-Keep the User-Agent stable between login and group requests. Do not put credentials directly in Python or systemd unit files.
+| Variable | Required | Default / notes |
+|---|---|---|
+| `MONITOR_SITE_ID` | Yes | lowercase alnum + hyphen |
+| `MONITOR_SITE_NAME` | No | display name |
+| `MONITOR_BASE_URL` | Yes | must be `https://` |
+| `MONITOR_USERNAME` | Yes | login identity |
+| `MONITOR_PASSWORD` | Yes | login password |
+| `MONITOR_LOGIN_PATH` | No | `/api/v1/auth/login` (fixed relative path) |
+| `MONITOR_REFRESH_PATH` | No | `/api/v1/auth/refresh` |
+| `MONITOR_GROUPS_PATH` | No | `/api/v1/groups/available` |
+| `MONITOR_USERNAME_FIELD` | No | `email` |
+| `POLL_INTERVAL_SECONDS` | No | `300` (minimum 60) |
+| `CONNECT_TIMEOUT_SECONDS` | No | `10` |
+| `READ_TIMEOUT_SECONDS` | No | `30` (raise if site is slow) |
+| `REFRESH_MARGIN_SECONDS` | No | `600` |
+| `REQUEST_JITTER_SECONDS` | No | `10` |
+| `DATA_DIR` | Yes | e.g. `.../data/<site-id>` |
+| `TOKEN_STATE_FILE` | Yes | must be under `DATA_DIR`, e.g. `.../token.json` |
+| `MONITOR_PROXY_URL` | No | optional; never log |
+| `LOG_LEVEL` | No | `INFO` |
+
+Legacy names `AIAPIBANK_EMAIL` / `AIAPIBANK_PASSWORD` / `AIAPIBANK_BASE_URL` are still accepted as fallbacks when `MONITOR_*` is unset.
+
+Keep the User-Agent stable across login, refresh, and groups. Do not embed credentials in Python or unit files.
 
 ## Request Lifecycle
 
-For each cycle:
+1. Ensure access token: password login if missing; refresh if near `exp`; else reuse memory/disk token.
+2. `GET` groups with `Authorization: Bearer …` and `Connection: close`.
+3. On 401 (or token-error 403 JSON): one refresh, then one password login, retry groups once.
+4. On Cloudflare/geo HTML 403: treat as region/egress — do not login loop.
+5. On 429: honor `Retry-After`. On timeout/5xx: keep token, backoff.
+6. Validate `data` is a list; never treat error bodies as empty groups.
+7. Write latest (+ event if hash changed); sleep `interval - elapsed + jitter`.
 
-1. Re-login when no access token exists or JWT `exp` is within a safety margin.
-2. Call `GET /api/v1/groups/available` with Bearer authentication.
-3. On 401/403, log in once and retry once.
-4. On connection/read timeout or 5xx, back off and retry without terminating the daemon.
-5. Validate that `data` is a list.
-6. Write full group data and print concise per-group output.
-7. Wait until 300 seconds from the start of the successful cycle.
-
-Use separate connect and read timeouts, for example `(10, 30)`.
-
-## Idle Connection Requirement
-
-Do not leave a pooled keep-alive connection idle for the full polling interval and then reuse it. A controlled test against this site produced:
-
-```text
-before_idle status=200 seconds=1.529
-after_300s_idle ReadTimeout seconds=30.035
-fresh_connection status=200 seconds=1.197
-```
-
-Use one of these patterns:
-
-```python
-response = session.get(
-    url,
-    headers={
-        "Authorization": f"Bearer {token}",
-        "Connection": "close",
-    },
-    timeout=(10, 30),
-)
-```
-
-Or create and close a fresh Session for each polling cycle. Retain a stable User-Agent even when recreating the Session.
+Timeouts: `timeout=(connect, read)`.
 
 ## Persistence
 
-- Write `groups_latest.json` through a temporary file followed by atomic replacement.
-- Append one JSON object per successful poll to `groups_history.jsonl`.
-- Set token state permissions to `0600`.
-- Exclude credential files, token state, data output, and Python cache files from Git.
-- Add rotation or retention when history growth becomes material.
+Per site under `data/<site-id>/`:
+
+| File | Role |
+|---|---|
+| `token.json` | access/refresh/exp, mode `0600`, atomic |
+| `groups_latest.json` | last successful full snapshot + `content_hash` |
+| `groups_events.jsonl` | change events only (`initial` / `groups_changed`) |
+| `monitor.lock` | single instance |
+
+- Atomic write: temp + fsync + replace.
+- Events: append + fsync before replacing latest; dedupe by `content_hash`.
+- Default events retention: 180 days (pruned in process).
+- No SQLite in first version.
 
 ## Supervision
 
-Use a systemd service with network-online ordering, a fixed working directory, `Restart=always`, a short restart delay, and no credentials embedded in `ExecStart`. Verify the unit with `systemd-analyze verify` before enabling it.
+Template unit `sub2api-monitor@.service`:
+
+- Exec: project venv + `sub2api_monitor.py --env-file sites/%i.env`
+- `Restart=always`, `RestartSec=10`, `After/Wants=network-online.target`
+- Hardening: `NoNewPrivileges`, `PrivateTmp`, `ProtectSystem=strict`, `ReadWritePaths=…/data`
+
+```bash
+systemd-analyze verify /etc/systemd/system/sub2api-monitor@.service
+systemctl enable --now sub2api-monitor@pinaic
+systemctl enable --now sub2api-monitor@aiapibank
+```
