@@ -34,12 +34,12 @@
 | 6 | 原地替换难回滚 | ✅ **`sub2api-monitor-once@`** 新名 | §3.5、§8 |
 | 7 | Persistent / 误导 Install | ✅ 删除 | timer/service 蓝本 |
 
-## 四、仍待实现（文档已定、代码未做）
+## 四、实现进度
 
-- [ ] `--once` 有界重试实现 + 单测  
-- [ ] 仓库内 once service/timer 文件  
-- [ ] install 脚本：周期一致性、与 simple 互斥  
-- [ ] 真实 timer 路径双站双周期验证  
-- [ ] 超时后锁可再获取的集成验证  
+- [x] `--once` 有界重试实现 + 单测（`GroupMonitor.run_once` / `OnceBoundedRetryTests`）
+- [x] 仓库内 once service/timer 文件（`sub2api-monitor-once@.{service,timer}`）
+- [x] install 脚本：周期一致性、与 simple 互斥、回滚命令（`install_service.sh`）
+- [x] 超时杀进程后锁可再获取（单测：fd 关闭释 flock；生产路径靠内核行为）
+- [ ] 真实 timer 路径双站双周期验证（运维验收；`./install_service.sh` 试点后观察 ≥2 周期）
 
-完成前：**不得**宣称无功能回退上线。
+代码与 unit 闸门（§5.1、§9.1 自动化）已落地；**生产切换**仍须按 architecture §8 试点并完成 §9.2 现场验收后，方可宣称无功能回退上线。

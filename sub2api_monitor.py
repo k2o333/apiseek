@@ -36,6 +36,13 @@ LOG = logging.getLogger("sub2api-monitor")
 BACKOFF_SECONDS = (10, 30, 60, 120, 300)
 # Default events retention in days.
 EVENTS_RETENTION_DAYS = 180
+# --once bounded retry: process-level attempts (timer owns long-cycle schedule).
+DEFAULT_ONCE_ATTEMPTS = 3
+# Soft budget for in-process backoff under systemd TimeoutStartSec=240.
+DEFAULT_ONCE_BUDGET_SECONDS = 200.0
+# Process-level retries only for transient kinds. Auth recovery stays inside get_groups;
+# region/contract are not retried at process level (avoids useless re-login storms).
+ONCE_RETRYABLE_KINDS = frozenset({"timeout", "server", "network", "rate_limit", "error"})
 # Site id: lowercase alphanumerics and hyphens only.
 SITE_ID_RE = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
 # Fixed relative API path: starts with /; no scheme, no .., no query/fragment abuse.
@@ -315,25 +322,20 @@ def load_config(
     environ: Mapping[str, str] | None = None,
     enforce_interval: bool = True,
 ) -> MonitorConfig:
-    """Load and validate config from env file (+ optional process environ overrides)."""
+    """Load and validate config from env file (+ optional process environ overrides).
+
+    Pure with respect to process environment: never mutates os.environ.
+    Explicit process/environ values win; file values fill missing keys.
+    """
     env_file = env_file.resolve()
     file_vars = parse_env_file(env_file)
     if environ is None:
         environ = os.environ
-    # File values fill missing process env (setdefault). Explicit process env wins.
-    # Tests may pass a closed mapping instead of os.environ.
-    if environ is os.environ:
-        for k, v in file_vars.items():
-            os.environ.setdefault(k, v)
 
-        def get(key: str, default: str = "") -> str:
-            return os.environ.get(key, file_vars.get(key, default))
-    else:
-        effective = dict(file_vars)
-        effective.update({k: v for k, v in environ.items() if v is not None})
-
-        def get(key: str, default: str = "") -> str:
-            return effective.get(key, default)
+    def get(key: str, default: str = "") -> str:
+        if key in environ:
+            return environ[key]
+        return file_vars.get(key, default)
 
     base_dir = env_file.parent
     site_id = get("MONITOR_SITE_ID") or env_file.stem
@@ -1136,6 +1138,106 @@ class GroupMonitor:
             remaining = deadline - self.monotonic_fn()
             self.sleep_fn(min(1.0, remaining))
 
+    def run_once(
+        self,
+        *,
+        max_attempts: int = DEFAULT_ONCE_ATTEMPTS,
+        budget_seconds: float = DEFAULT_ONCE_BUDGET_SECONDS,
+    ) -> int:
+        """Bounded-retry poll round for oneshot/timer mode.
+
+        Success → 0. Exhausted retries / non-retryable failure / stop → 1.
+        Does not replace timer long-cycle scheduling; only absorbs short glitches
+        (429 Retry-After, timeout/5xx/network) within this process lifetime.
+        """
+        if max_attempts < 1:
+            max_attempts = 1
+        deadline = self.monotonic_fn() + max(0.0, float(budget_seconds))
+
+        for attempt in range(1, max_attempts + 1):
+            if self.stop_flag():
+                LOG.info("site=%s once stop requested; attempt=%d/%d", self.config.site_id, attempt, max_attempts)
+                return 1
+
+            # Fresh connection each attempt: close pooled keep-alives.
+            try:
+                self.client.session.close()
+            except Exception:
+                pass
+
+            try:
+                self.poll_once()
+                return 0
+            except ApiError as exc:
+                self.failures += 1
+                LOG.error(
+                    "site=%s once attempt=%d/%d kind=%s status=%s failures=%d: %s",
+                    self.config.site_id,
+                    attempt,
+                    max_attempts,
+                    exc.kind,
+                    exc.status_code,
+                    self.failures,
+                    exc,
+                )
+                if attempt >= max_attempts:
+                    break
+                if exc.kind not in ONCE_RETRYABLE_KINDS:
+                    # region/contract/auth: no process-level storm; timer will reschedule.
+                    LOG.info(
+                        "site=%s once non-retryable kind=%s; ending round",
+                        self.config.site_id,
+                        exc.kind,
+                    )
+                    break
+                delay = self._once_backoff_capped(exc, deadline)
+                if delay is None:
+                    LOG.warning("site=%s once budget exhausted; ending round", self.config.site_id)
+                    break
+                LOG.info(
+                    "site=%s once backoff sleep=%.1fs attempt=%d/%d kind=%s",
+                    self.config.site_id,
+                    delay,
+                    attempt,
+                    max_attempts,
+                    exc.kind,
+                )
+                self.interruptible_sleep(delay)
+            except OSError as exc:
+                self.failures += 1
+                LOG.error(
+                    "site=%s once attempt=%d/%d OS error failures=%d: %s",
+                    self.config.site_id,
+                    attempt,
+                    max_attempts,
+                    self.failures,
+                    type(exc).__name__,
+                )
+                if attempt >= max_attempts:
+                    break
+                delay = self._once_backoff_capped(None, deadline)
+                if delay is None:
+                    LOG.warning("site=%s once budget exhausted; ending round", self.config.site_id)
+                    break
+                LOG.info(
+                    "site=%s once backoff sleep=%.1fs attempt=%d/%d kind=os",
+                    self.config.site_id,
+                    delay,
+                    attempt,
+                    max_attempts,
+                )
+                self.interruptible_sleep(delay)
+
+        return 1
+
+    def _once_backoff_capped(self, exc: Exception | None, deadline: float) -> float | None:
+        """Return sleep seconds capped by remaining oneshot budget, or None if no budget left."""
+        remaining = deadline - self.monotonic_fn()
+        if remaining <= 0:
+            return None
+        delay = self.backoff_delay(exc)
+        return min(delay, remaining)
+
     def run_loop(self) -> int:
         while not self.stop_flag():
             started = self.monotonic_fn()
@@ -1192,7 +1294,18 @@ def stop_handler(signum: int, _frame: Any) -> None:
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Sub2API multi-site group monitor")
     parser.add_argument("--env-file", type=Path, required=True, help="path to site env file")
-    parser.add_argument("--once", action="store_true", help="fetch once and exit")
+    parser.add_argument(
+        "--once",
+        action="store_true",
+        help="one bounded-retry poll round then exit (for systemd oneshot/timer)",
+    )
+    parser.add_argument(
+        "--once-attempts",
+        type=int,
+        default=DEFAULT_ONCE_ATTEMPTS,
+        metavar="N",
+        help=f"max poll attempts in --once mode (default {DEFAULT_ONCE_ATTEMPTS})",
+    )
     parser.add_argument("--validate", action="store_true", help="validate config only")
     return parser.parse_args(argv)
 
@@ -1246,15 +1359,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         if args.once:
-            try:
-                monitor.poll_once()
-                return 0
-            except ApiError as exc:
-                LOG.error("site=%s once failed kind=%s: %s", config.site_id, exc.kind, exc)
-                return 1
-            except OSError as exc:
-                LOG.error("site=%s once OS error: %s", config.site_id, type(exc).__name__)
-                return 1
+            return monitor.run_once(max_attempts=args.once_attempts)
         return monitor.run_loop()
     finally:
         client.close()

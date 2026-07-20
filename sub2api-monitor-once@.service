@@ -1,0 +1,20 @@
+[Unit]
+Description=Sub2API one-shot group poll (%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/projects/zhongzhuan
+ExecStart=/root/projects/zhongzhuan/.venv/bin/python \
+  /root/projects/zhongzhuan/sub2api_monitor.py \
+  --env-file /root/projects/zhongzhuan/sites/%i.env --once
+# ≥ bounded retries + worst-case login/refresh/groups chain; 120s is too tight with 60s read timeout
+TimeoutStartSec=240
+Nice=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/root/projects/zhongzhuan/data
+# No Restart=always: failed round waits for next timer (avoids login tight-loop).
+# Intentionally no Install section: enable the timer only, never this service.

@@ -929,6 +929,209 @@ class CliSmokeTests(unittest.TestCase):
             self.assertEqual(latest["count"], 1)
 
 
+class OnceBoundedRetryTests(unittest.TestCase):
+    """architecture §5.1 / §9.1: --once is a bounded-retry round, not fail-and-exit."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.data = self.root / "site"
+        self.data.mkdir()
+        self.config = mon.MonitorConfig(
+            site_id="site",
+            site_name="Site",
+            base_url="https://example.test",
+            username="user@example.test",
+            password="secret",
+            data_dir=self.data,
+            token_state_file=self.data / "token.json",
+            request_jitter_seconds=0,
+            poll_interval_seconds=300,
+        )
+        self.store = mon.TokenStore(self.config.token_state_file)
+        exp = int(time.time()) + 7200
+        self.store.save(
+            mon.TokenState(
+                access_token=make_jwt(exp),
+                refresh_token="rt",
+                access_expires_at=exp,
+            )
+        )
+        self.client = mon.AuthGroupClient(self.config, self.store)
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def _ok(self, groups: list) -> Mock:
+        resp = Mock(status_code=200)
+        resp.headers = {"Content-Type": "application/json"}
+        resp.json.return_value = {"data": groups}
+        resp.text = json.dumps({"data": groups})
+        return resp
+
+    def _clocked_monitor(self) -> tuple[mon.GroupMonitor, list[float]]:
+        """sleep_fn advances monotonic clock so interruptible_sleep does not busy-wait."""
+        clock = {"t": 0.0}
+        sleeps: list[float] = []
+
+        def mono() -> float:
+            return clock["t"]
+
+        def sleep_fn(sec: float) -> None:
+            sleeps.append(sec)
+            clock["t"] += sec
+
+        monitor = mon.GroupMonitor(
+            self.config,
+            self.client,
+            sleep_fn=sleep_fn,
+            monotonic_fn=mono,
+        )
+        return monitor, sleeps
+
+    def test_once_429_then_success_uses_backoff(self) -> None:
+        rate = Mock(status_code=429)
+        rate.headers = {"Retry-After": "2", "Content-Type": "application/json"}
+        rate.text = '{"error":"rate"}'
+        rate.json.return_value = {"error": "rate"}
+        self.client.session.get = Mock(side_effect=[rate, self._ok([{"id": 1}])])
+        monitor, sleeps = self._clocked_monitor()
+        rc = monitor.run_once(max_attempts=3)
+        self.assertEqual(rc, 0)
+        self.assertEqual(self.client.session.get.call_count, 2)
+        # interruptible_sleep chunks into ≤1s; total waited ≈ backoff (≥ Retry-After 2)
+        self.assertGreaterEqual(sum(sleeps), 2.0)
+        latest = json.loads(self.config.latest_file.read_text(encoding="utf-8"))
+        self.assertEqual(latest["groups"][0]["id"], 1)
+
+    def test_once_transient_exhausts_attempts(self) -> None:
+        self.client.session.get = Mock(side_effect=requests.ReadTimeout("t"))
+        monitor, sleeps = self._clocked_monitor()
+        rc = monitor.run_once(max_attempts=3)
+        self.assertEqual(rc, 1)
+        self.assertEqual(self.client.session.get.call_count, 3)
+        # two backoffs between three attempts
+        self.assertGreater(sum(sleeps), 0)
+
+    def test_once_region_does_not_retry(self) -> None:
+        region = Mock(status_code=403)
+        region.headers = {"Content-Type": "text/html"}
+        region.text = "<html>cloudflare access denied</html>"
+        region.json.side_effect = ValueError("not json")
+        self.client.session.get = Mock(return_value=region)
+        monitor, sleeps = self._clocked_monitor()
+        rc = monitor.run_once(max_attempts=3)
+        self.assertEqual(rc, 1)
+        self.assertEqual(self.client.session.get.call_count, 1)
+        self.assertEqual(sleeps, [])
+
+    def test_once_contract_does_not_retry(self) -> None:
+        bad = Mock(status_code=200)
+        bad.headers = {"Content-Type": "application/json"}
+        bad.json.return_value = {"not": "data"}
+        bad.text = '{"not":"data"}'
+        self.client.session.get = Mock(return_value=bad)
+        monitor, _sleeps = self._clocked_monitor()
+        rc = monitor.run_once(max_attempts=3)
+        self.assertEqual(rc, 1)
+        self.assertEqual(self.client.session.get.call_count, 1)
+
+    def test_once_budget_caps_backoff(self) -> None:
+        """remaining_budget caps sleep so oneshot stays under TimeoutStartSec."""
+        self.client.session.get = Mock(side_effect=requests.ReadTimeout("t"))
+        monitor, sleeps = self._clocked_monitor()
+        # failures ladder starts at 10s; budget 5s must cap
+        rc = monitor.run_once(max_attempts=2, budget_seconds=5.0)
+        self.assertEqual(rc, 1)
+        self.assertEqual(self.client.session.get.call_count, 2)
+        self.assertLessEqual(sum(sleeps), 5.0 + 0.01)
+
+    def test_main_once_attempts_flag(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = write_env(root / "pinaic.env", base_env(root))
+            calls = {"n": 0}
+
+            def fake_run_once(self, *, max_attempts=3, budget_seconds=200.0):  # noqa: ANN001
+                calls["n"] = max_attempts
+                return 0
+
+            with patch.object(mon.GroupMonitor, "run_once", fake_run_once):
+                with patch.object(mon.InstanceLock, "acquire", lambda self: None):
+                    with patch.object(mon.InstanceLock, "release", lambda self: None):
+                        rc = mon.main(
+                            ["--env-file", str(env), "--once", "--once-attempts", "5"]
+                        )
+            self.assertEqual(rc, 0)
+            self.assertEqual(calls["n"], 5)
+
+
+class PureConfigTests(unittest.TestCase):
+    def test_two_env_files_do_not_cross_values(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            e1 = base_env(root, site_id="site-a")
+            e1["MONITOR_BASE_URL"] = "https://a.example.test"
+            e1["MONITOR_USERNAME"] = "a@example.test"
+            e1["MONITOR_PASSWORD"] = "pass-a"
+            e2 = base_env(root, site_id="site-b")
+            e2["MONITOR_BASE_URL"] = "https://b.example.test"
+            e2["MONITOR_USERNAME"] = "b@example.test"
+            e2["MONITOR_PASSWORD"] = "pass-b"
+            env1 = write_env(root / "a.env", e1)
+            env2 = write_env(root / "b.env", e2)
+            # Closed environ: pure load must not rely on mutating os.environ.
+            cfg_a = mon.load_config(env1, environ={})
+            cfg_b = mon.load_config(env2, environ={})
+            self.assertEqual(cfg_a.site_id, "site-a")
+            self.assertEqual(cfg_b.site_id, "site-b")
+            self.assertEqual(cfg_a.base_url, "https://a.example.test")
+            self.assertEqual(cfg_b.base_url, "https://b.example.test")
+            self.assertEqual(cfg_a.username, "a@example.test")
+            self.assertEqual(cfg_b.username, "b@example.test")
+            self.assertEqual(cfg_a.password, "pass-a")
+            self.assertEqual(cfg_b.password, "pass-b")
+            self.assertNotEqual(cfg_a.data_dir, cfg_b.data_dir)
+
+    def test_load_config_does_not_mutate_os_environ(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            marker = "SUB2API_TEST_MARKER_SHOULD_NOT_APPEAR"
+            env_map = base_env(root)
+            env_map[marker] = "from-file"
+            env_path = write_env(root / "x.env", env_map)
+            before = os.environ.get(marker)
+            try:
+                if marker in os.environ:
+                    del os.environ[marker]
+                mon.load_config(env_path, environ=os.environ)
+                self.assertNotIn(marker, os.environ)
+            finally:
+                if before is None:
+                    os.environ.pop(marker, None)
+                else:
+                    os.environ[marker] = before
+
+
+class LockRecoveryTests(unittest.TestCase):
+    def test_lock_reacquirable_after_fd_close(self) -> None:
+        """Simulate TimeoutStartSec/SIGKILL: flock is released when fd closes."""
+        with tempfile.TemporaryDirectory() as tmp:
+            lock_path = Path(tmp) / "monitor.lock"
+            first = mon.InstanceLock(lock_path)
+            first.acquire()
+            # Kill-like: close underlying fd without orderly release path
+            # (kernel drops flock when last fd closes).
+            fh = first._fh
+            self.assertIsNotNone(fh)
+            fh.close()
+            first._fh = None
+
+            second = mon.InstanceLock(lock_path)
+            second.acquire()  # must not raise ConfigError
+            second.release()
+
+
 class HelperTests(unittest.TestCase):
     def test_jwt_expiry_and_backoff(self) -> None:
         exp = 1_800_000_000

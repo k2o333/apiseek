@@ -1,0 +1,14 @@
+[Unit]
+Description=Periodic Sub2API group poll (%i)
+# Do not add Requires= on the oneshot service: enable/start of the timer would
+# immediately pull the service and bypass OnBootSec (boot stampede).
+
+[Timer]
+OnBootSec=1min
+OnUnitInactiveSec=240s
+RandomizedDelaySec=60s
+AccuracySec=1s
+Unit=sub2api-monitor-once@%i.service
+
+[Install]
+WantedBy=timers.target
