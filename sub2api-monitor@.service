@@ -1,0 +1,18 @@
+[Unit]
+Description=Sub2API group monitor for %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/projects/zhongzhuan
+ExecStart=/root/projects/zhongzhuan/.venv/bin/python /root/projects/zhongzhuan/sub2api_monitor.py --env-file /root/projects/zhongzhuan/sites/%i.env
+Restart=always
+RestartSec=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/root/projects/zhongzhuan/data
+
+[Install]
+WantedBy=multi-user.target

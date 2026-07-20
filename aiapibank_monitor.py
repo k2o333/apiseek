@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
-"""Poll groups from a configurable authenticated API."""
+"""DEPRECATED: use sub2api_monitor.py with sites/<id>.env instead.
 
+Kept only for reference; operational entry is sub2api_monitor.py.
+"""
 from __future__ import annotations
 
 import argparse

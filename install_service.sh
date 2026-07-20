@@ -1,18 +1,35 @@
 #!/usr/bin/env bash
+# Install Sub2API monitor systemd template and enable site instances.
 set -euo pipefail
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+UNIT_SRC="$ROOT/sub2api-monitor@.service"
+UNIT_DST="/etc/systemd/system/sub2api-monitor@.service"
 
-project_dir="/root/projects/zhongzhuan"
-service_file="/etc/systemd/system/aiapibank-monitor.service"
-
-if [[ ! -f "${project_dir}/config.env" ]]; then
-    echo "Missing ${project_dir}/config.env; create it from config.env.example first." >&2
-    exit 1
+if [[ ! -f "$UNIT_SRC" ]]; then
+  echo "missing $UNIT_SRC" >&2
+  exit 1
+fi
+if [[ ! -x "$ROOT/.venv/bin/python" ]]; then
+  echo "project venv missing; create .venv and pip install -r requirements.txt" >&2
+  exit 1
 fi
 
-chmod 600 "${project_dir}/config.env"
-/usr/bin/python3 -m venv "${project_dir}/.venv"
-"${project_dir}/.venv/bin/python" -m pip install -r "${project_dir}/requirements.txt"
-install -m 0644 "${project_dir}/aiapibank-monitor.service" "${service_file}"
+install -m 644 "$UNIT_SRC" "$UNIT_DST"
+systemd-analyze verify "$UNIT_DST"
 systemctl daemon-reload
-systemctl enable --now aiapibank-monitor.service
-systemctl --no-pager --full status aiapibank-monitor.service
+
+SITES=("$@")
+if [[ ${#SITES[@]} -eq 0 ]]; then
+  SITES=(aiapibank pinaic)
+fi
+
+for site in "${SITES[@]}"; do
+  env_file="$ROOT/sites/${site}.env"
+  if [[ ! -f "$env_file" ]]; then
+    echo "skip $site: missing $env_file" >&2
+    continue
+  fi
+  chmod 600 "$env_file" || true
+  systemctl enable --now "sub2api-monitor@${site}.service"
+  systemctl --no-pager --full status "sub2api-monitor@${site}.service" || true
+done
