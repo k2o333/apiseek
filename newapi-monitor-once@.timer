@@ -1,0 +1,12 @@
+[Unit]
+Description=Periodic New-API token group poll (%i)
+
+[Timer]
+OnBootSec=1min
+OnUnitInactiveSec=240s
+RandomizedDelaySec=60s
+AccuracySec=1s
+Unit=newapi-monitor-once@%i.service
+
+[Install]
+WantedBy=timers.target

@@ -1,24 +1,42 @@
-# Sub2API 多站点分组监控
+# 多站点分组采集（Sub2API + New-API）
+
+## Sub2API（JWT / Bearer）
 
 公共脚本 `sub2api_monitor.py`：每个站点一份 env、独立数据目录、独立 systemd **timer + oneshot** 实例。  
-约每 4～5 分钟（timer：`OnUnitInactiveSec=240s` + `RandomizedDelaySec=60s`，期望中点约 270s + 任务时长）拉取完整分组；access token 临近过期时 refresh，失败则密码登录；401 会恢复一次。地区型 403、超时、5xx 不会清空 token，也不会覆盖最后一次成功快照。
+约每 4～5 分钟拉取完整分组；access token 临近过期时 refresh，失败则密码登录；401 会恢复一次。失败不覆盖上次成功快照。
 
-**生产默认路径：** `sub2api-monitor-once@<site>.timer` → oneshot service → `python … --once`（进程内有界重试，保留 429 Retry-After / 退避）。  
-旧常驻 `sub2api-monitor@`（Type=simple）仍保留在仓库中，便于回滚。
+**生产路径：** `sub2api-monitor-once@<site>.timer` → oneshot → `python … --once`。
+
+## New-API / legacy session（BotCF、TorchAI）
+
+独立入口 `newapi_monitor.py`（**不要**与 Sub2API 混用 DATA_DIR）。Session cookie 鉴权；TorchAI 需 `new-api-user` 头。  
+设计文档：`docs/drafts/newapi/`。
+
+```bash
+cp sites/botcf.env.example sites/botcf.env && chmod 600 sites/botcf.env
+# 填写 MONITOR_USERNAME / MONITOR_PASSWORD
+.venv/bin/python newapi_monitor.py --env-file sites/botcf.env --validate
+.venv/bin/python newapi_monitor.py --env-file sites/botcf.env
+./install_newapi_service.sh botcf torchai
+```
+
+数据：`data/<id>/auth_state.json`（0600）、`groups_latest.json`、`groups_events.jsonl`。  
+Timer：`newapi-monitor-once@<id>.timer`。
 
 ## 目录
 
 ```text
-sub2api_monitor.py                 # 公共入口
+sub2api_monitor.py                 # Sub2API 入口
+newapi_monitor.py                  # New-API 采集入口
+monitor_storage.py                 # New-API 快照/锁/尾事件去重
 sites/<site-id>.env                # 每站配置（0600，不入库）
-sites/<site-id>.env.example        # 示例
 data/<site-id>/
-  token.json                       # access/refresh，0600
-  groups_latest.json               # 最近一次成功快照
-  groups_events.jsonl              # 仅内容变化时追加
-  monitor.lock                     # 单实例锁
-sub2api-monitor-once@.service      # oneshot 模板（无 [Install]）
-sub2api-monitor-once@.timer        # 调度模板（生产默认）
+  token.json | auth_state.json     # 按后端
+  groups_latest.json
+  groups_events.jsonl
+  monitor.lock
+sub2api-monitor-once@.{service,timer}
+newapi-monitor-once@.{service,timer}
 sub2api-monitor@.service           # 旧 simple 常驻（回滚用）
 ```
 

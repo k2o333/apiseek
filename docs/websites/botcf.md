@@ -1,6 +1,6 @@
 # BotCF 普通用户令牌分组查询手册
 
-> **安全提示**：本文档包含用于登录 BotCF 控制台的用户名和密码。请仅在受控环境内部分享，避免将明文凭据提交到公共仓库或聊天频道。如用于自动化脚本，建议使用环境变量或密钥管理服务存储凭据。
+> **安全提示**：本文档中的账号密码为 **占位符**。真实凭据只放在本机 `sites/*.env`（0600）或密钥设施，禁止提交 Git。若历史版本曾含明文，应轮换密码并评估清理 Git 历史。
 
 ---
 
@@ -17,8 +17,8 @@
 | 站点地址 | `https://botcf.com` |
 | 登录页 | `https://botcf.com/login` |
 | 令牌管理页 | `https://botcf.com/console/token` |
-| 用户名 | `k2o333` |
-| 密码 | `bblswuji1` |
+| 用户名 | `<BOTCF_USERNAME>` |
+| 密码 | `<REDACTED_PASSWORD>` |
 | 分组数据源 API | `GET https://botcf.com/api/user/self/groups` |
 
 ---
@@ -51,8 +51,8 @@ https://botcf.com/login
 
 | 字段 | 值 |
 | :--- | :--- |
-| 用户名或邮箱 | `k2o333` |
-| 密码 | `bblswuji1` |
+| 用户名或邮箱 | `<BOTCF_USERNAME>` |
+| 密码 | `<REDACTED_PASSWORD>` |
 
 勾选复选框：
 
@@ -111,7 +111,7 @@ console.log(Object.keys(json.data));
 
 ### 4.3 当前可选项数量
 
-对于用户 `k2o333`，当前接口返回 **34 个**可选分组。
+对于用户 `<BOTCF_USERNAME>`，当前接口返回 **34 个**可选分组。
 
 ---
 
@@ -249,8 +249,8 @@ session = requests.Session()
 resp = session.post(
     LOGIN_URL,
     json={
-        "username": "k2o333",
-        "password": "bblswuji1"
+        "username": "<BOTCF_USERNAME>",
+        "password": "<REDACTED_PASSWORD>"
     },
     params={"turnstile": ""}
 )
