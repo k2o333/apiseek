@@ -22,6 +22,7 @@
 | [timer-units.example.md](./timer-units.example.md) | systemd 与锁语义 |
 | [implementation-checklist.md](./implementation-checklist.md) | 分阶段验收 |
 | [review.md](./review.md) | 评审原文 + 采纳状态 |
+| [getmulti/](./getmulti/) | **分组倍率规范化**（站级 divisor；pinaic/hubway ÷10；与 groups 同快照） |
 
 ## 适用范围
 

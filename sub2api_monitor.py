@@ -14,6 +14,7 @@ import fcntl
 import hashlib
 import json
 import logging
+import math
 import os
 import random
 import re
@@ -27,6 +28,8 @@ from typing import Any, Callable, Mapping
 from urllib.parse import urlparse
 
 import requests
+
+from monitor_rates import annotate_group_rates, parse_rate_divisor
 
 __version__ = "1.0.0"
 USER_AGENT = f"sub2api-monitor/{__version__}"
@@ -255,6 +258,8 @@ class MonitorConfig:
     env_file: Path | None = None
     # Default OFF: --once never does T-new until explicitly enabled after bootstrap.
     models_incremental_enable: bool = False
+    # Business rate = rate_multiplier / rate_divisor (site-level; default 1).
+    rate_divisor: float = 1.0
 
     @property
     def timeout(self) -> tuple[float, float]:
@@ -390,6 +395,7 @@ def load_config(
         refresh_margin = int(get("REFRESH_MARGIN_SECONDS", "600") or "600")
         jitter = float(get("REQUEST_JITTER_SECONDS", "10") or "10")
         retention = int(get("EVENTS_RETENTION_DAYS", str(EVENTS_RETENTION_DAYS)) or str(EVENTS_RETENTION_DAYS))
+        rate_divisor = parse_rate_divisor(get("MONITOR_RATE_DIVISOR", "1") or "1")
     except ValueError as exc:
         raise ConfigError(f"invalid numeric configuration: {exc}") from exc
 
@@ -428,6 +434,7 @@ def load_config(
         events_retention_days=retention,
         env_file=env_file,
         models_incremental_enable=models_incremental,
+        rate_divisor=rate_divisor,
     )
     validate_config(cfg, enforce_interval=enforce_interval)
     return cfg
@@ -611,8 +618,12 @@ class AuthGroupClient:
                 "User-Agent": USER_AGENT,
             }
         )
-        # Avoid long-idle keep-alive reuse across poll cycles.
-        self.session.headers["Connection"] = "close"
+        # Do not set Connection: close on the shared session. Some Sub2API forks
+        # (e.g. klinkw) bind JWT sessions to a network fingerprint (JWT `bnd`);
+        # forcing a new TCP connection between login/refresh and groups yields
+        # HTTP 401 SESSION_BINDING_MISMATCH. Keep-alive is fine within one poll
+        # round; GroupMonitor still closes the session between cycles/attempts
+        # to avoid long-idle pooled sockets.
         if config.proxy_url:
             self.session.proxies.update({"http": config.proxy_url, "https": config.proxy_url})
 
@@ -644,7 +655,7 @@ class AuthGroupClient:
                     self.config.username_field: self.config.username,
                     "password": self.config.password,
                 },
-                headers={"Content-Type": "application/json", "User-Agent": USER_AGENT, "Connection": "close"},
+                headers={"Content-Type": "application/json", "User-Agent": USER_AGENT},
                 timeout=self.config.timeout,
             )
         except requests.Timeout as exc:
@@ -688,7 +699,7 @@ class AuthGroupClient:
             response = self.session.post(
                 self._url(self.config.refresh_path),
                 json={"refresh_token": rt},
-                headers={"Content-Type": "application/json", "User-Agent": USER_AGENT, "Connection": "close"},
+                headers={"Content-Type": "application/json", "User-Agent": USER_AGENT},
                 timeout=self.config.timeout,
             )
         except requests.Timeout as exc:
@@ -764,7 +775,6 @@ class AuthGroupClient:
                 self._url(self.config.groups_path),
                 headers={
                     "Authorization": f"Bearer {token}",
-                    "Connection": "close",
                     "User-Agent": USER_AGENT,
                     "Accept": "application/json",
                 },
@@ -839,8 +849,14 @@ class AuthGroupClient:
         for item in data:
             if not isinstance(item, dict):
                 raise ApiError("group item is not an object", kind="contract")
-            # Safe field reads; keep full dict but ensure id/name/rate/status accessible.
-            _ = item.get("id"), item.get("name"), item.get("rate_multiplier"), item.get("status")
+            # Require finite rate_multiplier (getmulti raw authority); id/name/status readable.
+            raw = item.get("rate_multiplier")
+            if isinstance(raw, bool) or not isinstance(raw, (int, float)) or not math.isfinite(float(raw)):
+                raise ApiError(
+                    f"group rate_multiplier missing or not a finite number: {raw!r}",
+                    kind="contract",
+                )
+            _ = item.get("id"), item.get("name"), item.get("status")
             groups.append(item)
         return groups
 
@@ -905,6 +921,7 @@ def summarize_group(group: Mapping[str, Any]) -> dict[str, Any]:
         "id": group.get("id"),
         "name": group.get("name"),
         "rate_multiplier": group.get("rate_multiplier"),
+        "rate_multiplier_effective": group.get("rate_multiplier_effective"),
         "status": group.get("status"),
     }
 
@@ -1037,6 +1054,7 @@ class SnapshotStore:
             "fetched_at": fetched_at,
             "count": len(canonical),
             "content_hash": digest,
+            "rate_divisor": self.config.rate_divisor,
             "groups": canonical,
         }
 
@@ -1192,22 +1210,27 @@ class GroupMonitor:
     def poll_once(self) -> dict[str, Any]:
         previous = load_latest(self.snapshots.latest_path)
         prev_groups = previous.get("groups") if previous else None
-        groups = self.client.get_groups()
+        groups = annotate_group_rates(
+            self.client.get_groups(),
+            self.config.rate_divisor,
+        )
         record = self.snapshots.persist_success(groups)
         self.failures = 0
         LOG.info(
-            "site=%s fetched %d groups hash=%s",
+            "site=%s fetched %d groups hash=%s rate_divisor=%s",
             self.config.site_id,
             record["count"],
             record["content_hash"][:19] + "…",
+            self.config.rate_divisor,
         )
         for group in groups:
             LOG.info(
-                "site=%s group id=%s name=%s rate=%sx status=%s",
+                "site=%s group id=%s name=%s rate=%sx effective=%sx status=%s",
                 self.config.site_id,
                 group.get("id", "-"),
                 group.get("name", "-"),
                 group.get("rate_multiplier", "-"),
+                group.get("rate_multiplier_effective", "-"),
                 group.get("status", "-"),
             )
         # T-new: only truly added groups when incremental on AND bootstrap completed.
@@ -1655,7 +1678,7 @@ def run_models_full(
 
     km = build_keys_models_client(config, client)
     # Must re-GET groups (do not trust only latest on disk).
-    groups = client.get_groups()
+    groups = annotate_group_rates(client.get_groups(), config.rate_divisor)
     monitor = GroupMonitor(config, client)
     try:
         monitor.snapshots.persist_success(groups)
@@ -1750,16 +1773,21 @@ def main(argv: list[str] | None = None) -> int:
 
     setup_logging(config.log_level)
     LOG.info(
-        "site=%s name=%s base=%s data_dir=%s models_incremental=%s",
+        "site=%s name=%s base=%s data_dir=%s models_incremental=%s rate_divisor=%s",
         config.site_id,
         config.site_name,
         config.base_url,
         config.data_dir,
         int(config.models_incremental_enable),
+        config.rate_divisor,
     )
 
     if args.validate:
-        LOG.info("site=%s configuration valid", config.site_id)
+        LOG.info(
+            "site=%s configuration valid rate_divisor=%s",
+            config.site_id,
+            config.rate_divisor,
+        )
         return 0
 
     models_flags = (

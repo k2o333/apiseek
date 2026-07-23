@@ -32,6 +32,7 @@ python3 sub2api_monitor.py --env-file sites/<site-id>.env [--validate|--once]
 | `TOKEN_STATE_FILE` | Yes | must be under `DATA_DIR`, e.g. `.../token.json` |
 | `MONITOR_PROXY_URL` | No | optional; never log |
 | `LOG_LEVEL` | No | `INFO` |
+| `MONITOR_RATE_DIVISOR` | No | `1`; business rate = `rate_multiplier / divisor`. pinaic/hubway use `10` |
 
 Legacy names `AIAPIBANK_EMAIL` / `AIAPIBANK_PASSWORD` / `AIAPIBANK_BASE_URL` are still accepted as fallbacks when `MONITOR_*` is unset.
 
@@ -56,7 +57,7 @@ Per site under `data/<site-id>/`:
 | File | Role |
 |---|---|
 | `token.json` | access/refresh/exp, mode `0600`, atomic |
-| `groups_latest.json` | last successful full snapshot + `content_hash` |
+| `groups_latest.json` | last successful full snapshot + `content_hash` + `rate_divisor`; each group has raw `rate_multiplier` and `rate_multiplier_effective` |
 | `groups_events.jsonl` | change events only (`initial` / `groups_changed`) |
 | `monitor.lock` | single instance |
 

@@ -154,6 +154,85 @@ class ConfigTests(unittest.TestCase):
                 with self.assertRaises(mon.ConfigError):
                     mon.load_config(env, environ={})
 
+    def test_rate_divisor_default_is_one(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = write_env(root / "pinaic.env", base_env(root))
+            cfg = mon.load_config(env, environ={})
+            self.assertEqual(cfg.rate_divisor, 1.0)
+
+    def test_rate_divisor_ten(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = write_env(root / "pinaic.env", base_env(root, MONITOR_RATE_DIVISOR="10"))
+            cfg = mon.load_config(env, environ={})
+            self.assertEqual(cfg.rate_divisor, 10.0)
+
+    def test_rate_divisor_invalid_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for bad in ("0", "-1", "nan", "inf", "abc", "true"):
+                e = base_env(root, MONITOR_RATE_DIVISOR=bad)
+                env = write_env(root / "x.env", e)
+                with self.assertRaises(mon.ConfigError):
+                    mon.load_config(env, environ={})
+
+
+class RateAnnotateTests(unittest.TestCase):
+    def test_divide_by_ten(self) -> None:
+        groups = mon.annotate_group_rates(
+            [{"id": 69, "name": "CCMAX", "rate_multiplier": 16, "status": "active"}],
+            10.0,
+        )
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0]["rate_multiplier"], 16)
+        self.assertAlmostEqual(groups[0]["rate_multiplier_effective"], 1.6)
+
+    def test_divisor_one_identity(self) -> None:
+        groups = mon.annotate_group_rates(
+            [{"id": 1, "name": "g", "rate_multiplier": 0.12}],
+            1.0,
+        )
+        self.assertAlmostEqual(groups[0]["rate_multiplier_effective"], 0.12)
+
+    def test_does_not_mutate_input(self) -> None:
+        original = [{"id": 1, "rate_multiplier": 10}]
+        mon.annotate_group_rates(original, 10.0)
+        self.assertNotIn("rate_multiplier_effective", original[0])
+
+    def test_effective_changes_content_hash(self) -> None:
+        raw = [{"id": 1, "name": "a", "rate_multiplier": 16, "status": "active"}]
+        a = mon.annotate_group_rates(raw, 1.0)
+        b = mon.annotate_group_rates(raw, 10.0)
+        self.assertNotEqual(mon.content_hash_groups(a), mon.content_hash_groups(b))
+
+    def test_persist_writes_rate_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data = root / "site"
+            data.mkdir()
+            config = mon.MonitorConfig(
+                site_id="pinaic",
+                site_name="PinAI",
+                base_url="https://example.test",
+                username="u",
+                password="p",
+                data_dir=data,
+                token_state_file=data / "token.json",
+                rate_divisor=10.0,
+            )
+            store = mon.SnapshotStore(config)
+            groups = mon.annotate_group_rates(
+                [{"id": 69, "name": "CCMAX", "rate_multiplier": 16, "status": "active"}],
+                config.rate_divisor,
+            )
+            record = store.persist_success(groups)
+            self.assertEqual(record["rate_divisor"], 10.0)
+            self.assertAlmostEqual(record["groups"][0]["rate_multiplier_effective"], 1.6)
+            latest = json.loads(config.latest_file.read_text(encoding="utf-8"))
+            self.assertEqual(latest["rate_divisor"], 10.0)
+            self.assertAlmostEqual(latest["groups"][0]["rate_multiplier_effective"], 1.6)
+
 
 class AuthUnitTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -350,10 +429,10 @@ class AuthErrorTests(unittest.TestCase):
         refresh_resp.json.return_value = {
             "data": {"access_token": make_jwt(new_exp), "refresh_token": "rt2"}
         }
-        self.client.session.get = Mock(side_effect=[rejected, self._groups_ok([{"id": 1}])])
+        self.client.session.get = Mock(side_effect=[rejected, self._groups_ok([{"id": 1, "name": "g", "rate_multiplier": 1, "status": "active"}])])
         self.client.session.post = Mock(return_value=refresh_resp)
         groups = self.client.get_groups()
-        self.assertEqual(groups, [{"id": 1}])
+        self.assertEqual(groups, [{"id": 1, "name": "g", "rate_multiplier": 1, "status": "active"}])
         self.assertEqual(self.store.state.refresh_token, "rt2")
 
     def test_401_refresh_fail_login_ok(self) -> None:
@@ -452,6 +531,43 @@ class AuthErrorTests(unittest.TestCase):
         self.assertEqual(ctx.exception.kind, "timeout")
         self.assertEqual(self.store.state.access_token, self.token)
 
+    def test_auth_and_groups_do_not_force_connection_close(self) -> None:
+        """Sites with JWT network fingerprint binding reject mid-round Connection: close."""
+        self.assertNotEqual(
+            (self.client.session.headers.get("Connection") or "").lower(),
+            "close",
+        )
+        new_exp = int(time.time()) + 7200
+        login_resp = Mock(status_code=200)
+        login_resp.json.return_value = {
+            "data": {"access_token": make_jwt(new_exp), "refresh_token": "rt-new"}
+        }
+        post_headers: list[dict] = []
+
+        def capture_post(url, **kwargs):
+            post_headers.append(dict(kwargs.get("headers") or {}))
+            return login_resp
+
+        get_headers: list[dict] = []
+
+        def capture_get(url, **kwargs):
+            get_headers.append(dict(kwargs.get("headers") or {}))
+            return self._groups_ok([{"id": 1, "name": "g", "rate_multiplier": 1, "status": "active"}])
+
+        self.store.save(mon.TokenState())
+        self.client.session.post = Mock(side_effect=capture_post)
+        self.client.session.get = Mock(side_effect=capture_get)
+        groups = self.client.get_groups()
+        self.assertEqual(groups, [{"id": 1, "name": "g", "rate_multiplier": 1, "status": "active"}])
+        self.assertTrue(post_headers, "login should POST")
+        self.assertTrue(get_headers, "groups should GET")
+        for headers in post_headers + get_headers:
+            self.assertNotEqual(
+                (headers.get("Connection") or "").lower(),
+                "close",
+                msg=f"must not force Connection: close in {headers}",
+            )
+
 
 class GroupsProcessingTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -532,6 +648,7 @@ class GroupsProcessingTests(unittest.TestCase):
             ({}, "missing data"),
             ({"data": {}}, "not a list"),
             (None, "not JSON"),
+            ({"data": [{"id": 1, "name": "g", "status": "active"}]}, "rate_multiplier"),
         ):
             r = Mock(status_code=200)
             r.headers = {"Content-Type": "application/json"}
@@ -545,6 +662,8 @@ class GroupsProcessingTests(unittest.TestCase):
             with self.assertRaises(mon.ApiError) as ctx:
                 client.get_groups()
             self.assertEqual(ctx.exception.kind, "contract")
+            if match != "not JSON":
+                self.assertIn(match, str(ctx.exception))
 
 
 class CrashConsistencyTests(unittest.TestCase):
@@ -652,7 +771,7 @@ class PollLoopTests(unittest.TestCase):
 
     def test_two_successful_polls(self) -> None:
         self.client.session.get = Mock(
-            side_effect=[self._ok([{"id": 1}]), self._ok([{"id": 1}, {"id": 2}])]
+            side_effect=[self._ok([{"id": 1, "name": "g", "rate_multiplier": 1, "status": "active"}]), self._ok([{"id": 1, "name": "g", "rate_multiplier": 1, "status": "active"}, {"id": 2, "name": "h", "rate_multiplier": 2, "status": "active"}])]
         )
         monitor = mon.GroupMonitor(self.config, self.client)
         monitor.poll_once()
@@ -663,7 +782,10 @@ class PollLoopTests(unittest.TestCase):
 
     def test_success_then_timeout_keeps_latest(self) -> None:
         self.client.session.get = Mock(
-            side_effect=[self._ok([{"id": 9, "name": "keep"}]), requests.ReadTimeout("t")]
+            side_effect=[
+                self._ok([{"id": 9, "name": "keep", "rate_multiplier": 1, "status": "active"}]),
+                requests.ReadTimeout("t"),
+            ]
         )
         monitor = mon.GroupMonitor(self.config, self.client)
         monitor.poll_once()
@@ -684,7 +806,7 @@ class PollLoopTests(unittest.TestCase):
             "data": {"access_token": make_jwt(new_exp), "refresh_token": "rt"}
         }
         self.client.session.get = Mock(
-            side_effect=[self._ok([{"id": 1}]), rejected, self._ok([{"id": 1}])]
+            side_effect=[self._ok([{"id": 1, "name": "g", "rate_multiplier": 1, "status": "active"}]), rejected, self._ok([{"id": 1, "name": "g", "rate_multiplier": 1, "status": "active"}])]
         )
         self.client.session.post = Mock(return_value=refresh_resp)
         monitor = mon.GroupMonitor(self.config, self.client)
@@ -697,7 +819,12 @@ class PollLoopTests(unittest.TestCase):
         bad.headers = {"Content-Type": "application/json"}
         bad.text = "{bad"
         bad.json.side_effect = requests.JSONDecodeError("e", "d", 0)
-        self.client.session.get = Mock(side_effect=[self._ok([{"id": 5}]), bad])
+        self.client.session.get = Mock(
+            side_effect=[
+                self._ok([{"id": 5, "name": "g", "rate_multiplier": 1, "status": "active"}]),
+                bad,
+            ]
+        )
         monitor = mon.GroupMonitor(self.config, self.client)
         monitor.poll_once()
         with self.assertRaises(mon.ApiError):
@@ -709,7 +836,7 @@ class PollLoopTests(unittest.TestCase):
         self.client.session.get = Mock(
             side_effect=[
                 requests.ReadTimeout("t"),
-                self._ok([{"id": 1}]),
+                self._ok([{"id": 1, "name": "g", "rate_multiplier": 1, "status": "active"}]),
             ]
         )
         monitor = mon.GroupMonitor(self.config, self.client)
@@ -749,7 +876,7 @@ class PollLoopTests(unittest.TestCase):
                 raise requests.ReadTimeout("t")
             if calls["n"] >= 3:
                 stop["flag"] = True
-            return self._ok([{"id": 1}])
+            return self._ok([{"id": 1, "name": "g", "rate_multiplier": 1, "status": "active"}])
 
         self.client.session.get = Mock(side_effect=get_side_effect)
         monitor = mon.GroupMonitor(
@@ -816,10 +943,10 @@ class MultiSiteIsolationTests(unittest.TestCase):
                     errors.append((site_id, exc))
 
             t1 = threading.Thread(
-                target=run_site, args=("site-a", "pass-a", [{"id": 1, "name": "A"}])
+                target=run_site, args=("site-a", "pass-a", [{"id": 1, "name": "A", "rate_multiplier": 1, "status": "active"}])
             )
             t2 = threading.Thread(
-                target=run_site, args=("site-b", "pass-b", [{"id": 2, "name": "B"}])
+                target=run_site, args=("site-b", "pass-b", [{"id": 2, "name": "B", "rate_multiplier": 2, "status": "active"}])
             )
             t1.start()
             t2.start()
@@ -875,8 +1002,10 @@ class MultiSiteIsolationTests(unittest.TestCase):
             client_a.session.get = Mock(side_effect=requests.ReadTimeout("t"))
             ok = Mock(status_code=200)
             ok.headers = {"Content-Type": "application/json"}
-            ok.json.return_value = {"data": [{"id": 7}]}
-            ok.text = '{"data":[{"id":7}]}'
+            ok.json.return_value = {
+                "data": [{"id": 7, "name": "g", "rate_multiplier": 1, "status": "active"}]
+            }
+            ok.text = json.dumps(ok.json.return_value)
             client_b.session.get = Mock(return_value=ok)
             with self.assertRaises(mon.ApiError):
                 mon_a.poll_once()
@@ -994,7 +1123,7 @@ class OnceBoundedRetryTests(unittest.TestCase):
         rate.headers = {"Retry-After": "2", "Content-Type": "application/json"}
         rate.text = '{"error":"rate"}'
         rate.json.return_value = {"error": "rate"}
-        self.client.session.get = Mock(side_effect=[rate, self._ok([{"id": 1}])])
+        self.client.session.get = Mock(side_effect=[rate, self._ok([{"id": 1, "name": "g", "rate_multiplier": 1, "status": "active"}])])
         monitor, sleeps = self._clocked_monitor()
         rc = monitor.run_once(max_attempts=3)
         self.assertEqual(rc, 0)

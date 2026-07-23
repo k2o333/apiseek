@@ -22,6 +22,7 @@ from urllib.parse import urlparse
 
 import requests
 
+from monitor_rates import annotate_group_rates, parse_rate_divisor
 from monitor_storage import (
     BACKEND_NEWAPI,
     InstanceLock,
@@ -147,6 +148,8 @@ class MonitorConfig:
     log_level: str = "INFO"
     project_root: Path = PROJECT_ROOT
     env_file: Path | None = None
+    # Business rate = rate_multiplier / rate_divisor (site-level; default 1).
+    rate_divisor: float = 1.0
 
     @property
     def timeout(self) -> tuple[float, float]:
@@ -206,8 +209,9 @@ def load_config(
     try:
         connect_timeout = float(get("CONNECT_TIMEOUT_SECONDS", str(DEFAULT_CONNECT)) or DEFAULT_CONNECT)
         read_timeout = float(get("READ_TIMEOUT_SECONDS", str(DEFAULT_READ)) or DEFAULT_READ)
+        rate_divisor = parse_rate_divisor(get("MONITOR_RATE_DIVISOR", "1") or "1")
     except ValueError as exc:
-        raise ConfigError(f"invalid timeout: {exc}") from exc
+        raise ConfigError(f"invalid numeric configuration: {exc}") from exc
     if connect_timeout <= 0 or read_timeout <= 0:
         raise ConfigError("timeouts must be positive")
 
@@ -232,6 +236,7 @@ def load_config(
         log_level=log_level,
         project_root=root,
         env_file=env_file,
+        rate_divisor=rate_divisor,
     )
     try:
         cfg.data_dir.mkdir(parents=True, exist_ok=True)
@@ -1185,16 +1190,20 @@ def run_models_full(
                     print(json.dumps(preflight, ensure_ascii=False, indent=2, sort_keys=True))
                     return 1
 
-            groups = fetch_groups_with_recovery(
-                client,
-                deadline=deadline,
-                monotonic_fn=mono,
-                sleep_fn=sleep,
+            groups = annotate_group_rates(
+                fetch_groups_with_recovery(
+                    client,
+                    deadline=deadline,
+                    monotonic_fn=mono,
+                    sleep_fn=sleep,
+                ),
+                config.rate_divisor,
             )
             SnapshotStore(
                 config.data_dir,
                 config.site_id,
                 backend=BACKEND_NEWAPI,
+                rate_divisor=config.rate_divisor,
             ).persist_success(groups)
 
             ensure_result = models_mod.ensure_coverage(
@@ -1407,7 +1416,12 @@ def run_collect(
         sleep_fn=sleep,
         deadline=deadline,
     )
-    store = SnapshotStore(config.data_dir, config.site_id, backend=BACKEND_NEWAPI)
+    store = SnapshotStore(
+        config.data_dir,
+        config.site_id,
+        backend=BACKEND_NEWAPI,
+        rate_divisor=config.rate_divisor,
+    )
     lock = InstanceLock(config.lock_file)
 
     try:
@@ -1419,11 +1433,14 @@ def run_collect(
     try:
         try:
             client.ensure_auth()
-            groups = fetch_groups_with_recovery(
-                client,
-                deadline=deadline,
-                monotonic_fn=mono,
-                sleep_fn=sleep,
+            groups = annotate_group_rates(
+                fetch_groups_with_recovery(
+                    client,
+                    deadline=deadline,
+                    monotonic_fn=mono,
+                    sleep_fn=sleep,
+                ),
+                config.rate_divisor,
             )
             previous_latest = load_latest(store.latest_path)
 
@@ -1507,10 +1524,20 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     setup_logging(config.log_level)
-    LOG.info("site=%s base=%s data_dir=%s", config.site_id, config.base_url, config.data_dir)
+    LOG.info(
+        "site=%s base=%s data_dir=%s rate_divisor=%s",
+        config.site_id,
+        config.base_url,
+        config.data_dir,
+        config.rate_divisor,
+    )
 
     if args.validate:
-        LOG.info("site=%s configuration valid", config.site_id)
+        LOG.info(
+            "site=%s configuration valid rate_divisor=%s",
+            config.site_id,
+            config.rate_divisor,
+        )
         return 0
 
     try:

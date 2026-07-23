@@ -20,8 +20,8 @@ Implement unattended polling with direct HTTP login, bounded retries, durable ou
 3. Log in through the JSON API and persist per-site `data/<site>/token.json` with mode `0600` (atomic write).
 4. Check JWT `exp` before each poll. Prefer refresh near expiry; persist rotated refresh tokens atomically. Fall back to password login when refresh is unavailable or rejected. Do not login/refresh on every groups poll when the access token is still valid.
 5. Use `--once` for a bounded-retry polling round. Let the production timer control the long interval; use `POLL_INTERVAL_SECONDS` only for foreground loop debugging and installer consistency checks.
-6. Write complete `groups_latest.json` atomically on success. Append `groups_events.jsonl` only when the content hash changes (or `initial` on first success). Never overwrite latest on failure.
-7. Avoid reusing a long-idle HTTP keep-alive connection. Use `Connection: close` and a consistent User-Agent.
+6. Annotate each group with `rate_multiplier_effective = rate_multiplier / MONITOR_RATE_DIVISOR` (default divisor `1`; pinaic/hubway `10`). Keep raw `rate_multiplier`. Write complete `groups_latest.json` (include top-level `rate_divisor`) atomically on success. Append `groups_events.jsonl` only when the content hash changes (or `initial` on first success). Never overwrite latest on failure.
+7. Keep a consistent User-Agent. Within one poll round, allow HTTP keep-alive so login/refresh and groups share a connection (some sites bind JWT to a network fingerprint and reject `Connection: close` mid-round with `SESSION_BINDING_MISMATCH`). Closing the session **between** poll cycles/attempts is fine to avoid long-idle pooled sockets.
 8. Classify errors: 401 → one refresh then one login; 403 geo/HTML → no login loop; 429 Retry-After; timeout/5xx keep token and back off.
 9. Run each site through `sub2api-monitor-once@<site-id>.timer`. Never run the legacy simple service and the once timer for the same site at the same time.
 10. Verify with unit tests (mock HTTP) plus real `--validate` / `--once` when credentials and network allow.

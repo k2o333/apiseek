@@ -35,16 +35,17 @@ sub2api-monitor-once@<id>.timer
 ## 3. 单轮数据流
 
 ```text
-load config
+load config  (+ MONITOR_RATE_DIVISOR, default 1)
   -> acquire monitor.lock (non-blocking)
   -> load token cache
   -> token near expiry? refresh : reuse
   -> refresh unavailable/rejected? password login
   -> GET groups with Bearer
   -> 401: recover auth once, then retry groups once
-  -> canonicalize + hash + diff
+  -> annotate_group_rates: rate_multiplier_effective = raw / rate_divisor
+  -> canonicalize + hash + diff  (hash includes full group objects, hence effective)
   -> append event when legacy hash policy says changed
-  -> atomic replace groups_latest.json
+  -> atomic replace groups_latest.json  (top-level rate_divisor + per-group effective)
   -> optional incremental models for true new groups
   -> release lock
 ```
@@ -97,6 +98,20 @@ data/<id>/
 
 `token.json` 必须 0600。groups latest 只在完整成功后原子替换；失败保留旧值。当前 groups 使用 Sub2API legacy schema 和历史 hash/event dedup，正式目标见 [storage contract](../02%20specs/contracts/storage.md)。
 
+### 6.1 分组倍率规范化
+
+| 字段 | 含义 |
+|------|------|
+| `rate_multiplier` | Provider 原始倍率（不改写） |
+| `rate_multiplier_effective` | `rate_multiplier / MONITOR_RATE_DIVISOR` |
+| 顶层 `rate_divisor` | 本快照使用的 divisor |
+
+- 配置：`MONITOR_RATE_DIVISOR`（正有限浮点，默认 `1`）。**pinaic / hubway 配 `10`**（例 raw `16` → effective `1.6`）；其余站省略或 `1`。
+- 运行时只读 env，禁止按 `site_id` 写死 divisor。
+- 首版仅主字段 `rate_multiplier`；`image`/`video`/`peak` 附属倍率不换算。
+- 消费：与后台对照读 raw；业务报价/跨站比较读 effective。models 快照 **不**复制 rate 字段，按需 join groups。
+- 实现：`monitor_rates.py`（`parse_rate_divisor` / `annotate_group_rates`）+ `sub2api_monitor.py` 成功路径。
+
 ## 7. 错误与恢复
 
 | 类别 | 行为 |
@@ -108,6 +123,19 @@ data/<id>/
 | timeout/5xx/network | 保留 token/latest，进程内有界重试 |
 | contract | 不覆盖 latest，不做 transient 连打 |
 | lock conflict | 不访问 provider，返回 2 |
+
+### 7.1 会话网络指纹（session binding）
+
+部分 Sub2API 部署（已验证：`ai.klinkw.com`）会在 JWT 中写入 `bnd`，把 access token 绑到登录时的网络指纹。若 **login/refresh 与紧随其后的 groups 请求不在同一 keep-alive 连接上**（例如对每条请求强制 `Connection: close`），groups 会返回：
+
+```json
+{"code":"SESSION_BINDING_MISMATCH","message":"Session network fingerprint changed, please login again"}
+```
+
+实现约定：
+
+- `AuthGroupClient` **不**在请求头里强制 `Connection: close`，保证同轮 login/refresh → groups（及一次 auth recovery）可复用连接；
+- `GroupMonitor` 仍可在 **轮次之间** `session.close()`，避免长间隔 idle keep-alive 假死；轮次开始时若旧 token 的指纹已失效，走既有 401 recovery（refresh/login 后再 groups）。
 
 ## 8. 安装与回滚
 

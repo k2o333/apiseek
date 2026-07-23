@@ -1,0 +1,123 @@
+site_id,backend,fetched_at,group_id,group_name,rate_multiplier,rate_multiplier_effective,rate_divisor,status,platform,description
+aiapibank,sub2api,2026-07-23T09:50:29Z,14,GPT-Image-2 分组 特价0.05一张（只支持1K）,0.05,0.05,1.0,active,openai,生图1K分组
+aiapibank,sub2api,2026-07-23T09:50:29Z,16,Image-2 生图1K/2K/4K,0.1,0.1,1.0,active,openai,3种分辨率全支持
+aiapibank,sub2api,2026-07-23T09:50:29Z,18,GPT Plus稳定组,0.12,0.12,1.0,active,openai,绝对稳定 蹬就完了
+aiapibank,sub2api,2026-07-23T09:50:29Z,2,Claude特价组,0.15,0.15,1.0,active,anthropic,Claude kiro渠道 90高缓存 高性价比
+aiapibank,sub2api,2026-07-23T09:50:29Z,32,GPT低价分组,0.08,0.08,1.0,active,openai,限时低价 猛猛蹬 5.6系列可用
+aiapibank,sub2api,2026-07-23T09:50:29Z,37,Grok分组（限时超低价）,0.05,0.05,1.0,active,grok,仅Grok-4.5可用
+aiapibank,sub2api,2026-07-23T09:50:29Z,4,GPT Pro纯血组,0.2,0.2,1.0,active,openai,超稳纯Pro池 满血稳定
+aiapibank,sub2api,2026-07-23T09:50:29Z,5,GPT Plus+Pro组,0.14,0.14,1.0,active,openai,主Plus号池+Pro号池兜底 性价比高 稳定性up
+aiapibank,sub2api,2026-07-23T09:50:29Z,6,Claude Code Max 20x组,1,1.0,1.0,active,anthropic,满血Claude 最新模型可用
+aresaicode,sub2api,2026-07-23T09:52:02Z,11,生图（0.02一张）,1,1.0,1.0,active,openai,
+aresaicode,sub2api,2026-07-23T09:52:02Z,15,低价plus,0.035,0.035,1.0,active,openai,延迟会很高！介意速度的去用另一个plus
+aresaicode,sub2api,2026-07-23T09:52:02Z,18,grok4.5,0.01,0.01,1.0,active,grok,不可以生图，只能用grok4.5，建议使用grok的cli工具和claude。不建议codex接入
+aresaicode,sub2api,2026-07-23T09:52:02Z,2,gpt codex-plus（已上5.6）,0.08,0.08,1.0,active,openai,可以接入chatbox聊天，支持codex等，已经支持生图
+aresaicode,sub2api,2026-07-23T09:52:02Z,8,claude kiro版本（高缓存，上下文1m）,0.13,0.13,1.0,active,anthropic,"kiro版本，非满血claude
+"
+botcf,newapi,2026-07-23T09:53:05Z,⚓Codex-Plus,⚓Codex-Plus,0.12,0.12,1.0,,,"目前性价比之选plus号池(有时会涨价因为有少量pro兜底)(真心的,三局只吃这个😡)"
+botcf,newapi,2026-07-23T09:53:05Z,⚡Codex-Fast,⚡Codex-Fast,0.18,0.18,1.0,,,强制优先混池加大量pro兜底(确实快那么点😭)
+botcf,newapi,2026-07-23T09:53:05Z,🃏Openai-Azure,🃏Openai-Azure,1.6,1.6,1.0,,,速刷蒸馏
+botcf,newapi,2026-07-23T09:53:05Z,🇨🇳高速开源权重,🇨🇳高速开源权重,0.5,0.5,1.0,,,高速开源权重模型线路
+botcf,newapi,2026-07-23T09:53:05Z,🇨🇳高速无缓开源权重,🇨🇳高速无缓开源权重,0.2,0.2,1.0,,,🇨🇳高速无缓开源权重
+botcf,newapi,2026-07-23T09:53:05Z,🇨🇳高速满血GLM5.2,🇨🇳高速满血GLM5.2,0.3,0.3,1.0,,,GLM-5.2 高速线路
+botcf,newapi,2026-07-23T09:53:05Z,🌆Image2-生图-BotCF01,🌆Image2-生图-BotCF01,1.0,1.0,1.0,,,BOTCF01 Image2：文生图 /v1/images/generations；图生图/改图 /v1/images/edits。支持 1K/2K/4K 自动路由。
+botcf,newapi,2026-07-23T09:53:05Z,🌆image,🌆image,1.0,1.0,1.0,,,image
+botcf,newapi,2026-07-23T09:53:05Z,🍊Claude-Kiro,🍊Claude-Kiro,0.12,0.12,1.0,,,圣人反代(反正kiro公司永远有的赚?😅)
+botcf,newapi,2026-07-23T09:53:05Z,🍊Claude-Kiro-Power,🍊Claude-Kiro-Power,0.18,0.18,1.0,,,🍊Claude-Kiro-Power
+botcf,newapi,2026-07-23T09:53:05Z,🍌Nana-Banana-生图-BotCF01,🍌Nana-Banana-生图-BotCF01,1.0,1.0,1.0,,,BOTCF01 Nana Banana：文生图 /v1/images/generations，图生图 /v1/images/edits；异步模型也可用 /v1/videos 自行轮询。
+botcf,newapi,2026-07-23T09:53:05Z,🎉Openai-Azure特惠,🎉Openai-Azure特惠,1.0,1.0,1.0,,,Azure OpenAI 限时特惠
+botcf,newapi,2026-07-23T09:53:05Z,🎞️SeedDance-Fast-Mini-视频-BOTCF03(国内满血渠道),🎞️SeedDance-Fast-Mini-视频-BOTCF03(国内满血渠道),1.5,1.5,1.0,,,BOTCF03 国内满血 Fast / Mini 渠道：POST /v1/video/generations，GET /v1/video/generations/{task_id}；不支持明星、版权内容与 NSFW。
+botcf,newapi,2026-07-23T09:53:05Z,🎞️SeedDance-Fast-视频-BOTCF02(国外满血渠道可NSFW),🎞️SeedDance-Fast-视频-BOTCF02(国外满血渠道可NSFW),10.8,10.8,1.0,,,BOTCF02 国外满血 Fast / Mini 渠道，支持 -ep / -hc NSFW 模型；真人脸必须先走 /v1/sd/assets。
+botcf,newapi,2026-07-23T09:53:05Z,🎞️SeedDance-Fast-视频-BotCF01(按秒),🎞️SeedDance-Fast-视频-BotCF01(按秒),1.0,1.0,1.0,,,BOTCF01 SeedDance Fast：POST /v1/videos；图生视频用 image_url/images。fast 用 duration 4-15 秒，video-v1 固定 5/10/15 秒且不传时长。
+botcf,newapi,2026-07-23T09:53:05Z,🎥SeedDance-Pro-视频-BOTCF02(国外满血渠道可NSFW),🎥SeedDance-Pro-视频-BOTCF02(国外满血渠道可NSFW),10.8,10.8,1.0,,,BOTCF02 国外满血渠道，支持 -ep / -hc NSFW 模型；真人脸必须先走 /v1/sd/assets，视频提交端点为 POST /v1/video/generate。
+botcf,newapi,2026-07-23T09:53:05Z,🎥SeedDance-Pro-视频-BOTCF03(国内满血渠道),🎥SeedDance-Pro-视频-BOTCF03(国内满血渠道),1.5,1.5,1.0,,,BOTCF03 国内满血 Pro 渠道：POST /v1/video/generations，GET /v1/video/generations/{task_id}；不支持明星、版权内容与 NSFW。
+botcf,newapi,2026-07-23T09:53:05Z,🎥SeedDance-Pro-视频-BotCF01(按秒),🎥SeedDance-Pro-视频-BotCF01(按秒),1.0,1.0,1.0,,,BOTCF01 SeedDance Pro：POST /v1/videos；图生视频用 image_url/images，duration 4-15 秒，创建一次后轮询任务状态。
+botcf,newapi,2026-07-23T09:53:05Z,👋Claude-AWS-B,👋Claude-AWS-B,2.4,2.4,1.0,,,👋Claude-AWS-B
+botcf,newapi,2026-07-23T09:53:05Z,💃Grok-Mix,💃Grok-Mix,0.25,0.25,1.0,,,💃Grok-Mix
+botcf,newapi,2026-07-23T09:53:05Z,💃grok-4.5无缓存,💃grok-4.5无缓存,0.01,0.01,1.0,,,
+botcf,newapi,2026-07-23T09:53:05Z,🔎Reranker,🔎Reranker,1.0,1.0,1.0,,,🔎Reranker 检索重排
+botcf,newapi,2026-07-23T09:53:05Z,🖼️Gemini-生图-BotCF01,🖼️Gemini-生图-BotCF01,1.0,1.0,1.0,,,BOTCF01 Gemini 图片：推荐 /v1/chat/completions，也可走 Gemini 原生 generateContent；参考图放在消息内容中。
+botcf,newapi,2026-07-23T09:53:05Z,😅Claude-Web,😅Claude-Web,0.15,0.15,1.0,,,😅网页反代的喵
+botcf,newapi,2026-07-23T09:53:05Z,😡Claude-Max,😡Claude-Max,1.38,1.38,1.0,,,"一小时缓存这个只能claudecode使用,(你把我雇了算了😡问问在哪发财呢哥😭)"
+botcf,newapi,2026-07-23T09:53:05Z,😡Claude-Max-外接,😡Claude-Max-外接,1.48,1.48,1.0,,,五分钟缓存这个可以claudecode外使用(你把我雇了算了😡问问在哪发财呢哥😭)
+botcf,newapi,2026-07-23T09:53:05Z,😡Codex-Pro,😡Codex-Pro,0.25,0.25,1.0,,,😡PRO号池
+botcf,newapi,2026-07-23T09:53:05Z,😡KIMI-K3特供,😡KIMI-K3特供,0.47,0.47,1.0,,,K3
+botcf,newapi,2026-07-23T09:53:05Z,😭这集神了:BOTCF零元购牢马不限速,😭这集神了:BOTCF零元购牢马不限速,0.01,0.01,1.0,,,
+botcf,newapi,2026-07-23T09:53:05Z,😭黄叔叔公益喵,😭黄叔叔公益喵,0.0,0.0,1.0,,,黄伟达
+botcf,newapi,2026-07-23T09:53:05Z,😵骨折价高速无缓GLM5.2,😵骨折价高速无缓GLM5.2,0.1,0.1,1.0,,,海外羊毛😭
+botcf,newapi,2026-07-23T09:53:05Z,🤡Claude-Antigravity,🤡Claude-Antigravity,0.48,0.48,1.0,,,🤡Claude-Antigravity
+botcf,newapi,2026-07-23T09:53:05Z,🤡Gemini-Pro,🤡Gemini-Pro,0.28,0.28,1.0,,,"小丑爱用(别骂了,三局也是🤡)"
+botcf,newapi,2026-07-23T09:53:05Z,🧠Grok-生图-BotCF01,🧠Grok-生图-BotCF01,1.0,1.0,1.0,,,BOTCF01 Grok Imagine：文生图 /v1/images/generations；带参考图时改用 /v1/images/edits。
+botcf,newapi,2026-07-23T09:53:05Z,🧬Embedding,🧬Embedding,1.0,1.0,1.0,,,🧬Embedding 文本向量化
+botcf,newapi,2026-07-23T09:53:05Z,🫳Gemini-CLI,🫳Gemini-CLI,1.2,1.2,1.0,,,🫳Gemini-CLI 不稳定经常死号好像无解😭
+hubway,sub2api,2026-07-23T09:52:51Z,12,CC-按次,1,0.1,10.0,active,anthropic,"综合倍率：0.06￥/次
+
+<!-- hubway-billing {""billing_mode"":""per_request"",""per_request_price"":0.6} -->"
+hubway,sub2api,2026-07-23T09:52:51Z,14,CC-KIRO-特价,0.8,0.08,10.0,active,anthropic,0.08倍超低价CC，偶尔不稳
+hubway,sub2api,2026-07-23T09:52:51Z,16,GPT--PRO满血,1.2,0.12,10.0,active,openai,"综合倍率0.12,稳定"
+hubway,sub2api,2026-07-23T09:52:51Z,23,im2生图2k/4k--0.06一张,1,0.1,10.0,active,openai,中质量原生4K
+hubway,sub2api,2026-07-23T09:52:51Z,25,im2high生图4K--0.15一张,1,0.1,10.0,active,openai,速度快质量高
+hubway,sub2api,2026-07-23T09:52:51Z,26,香蕉pro-0.08一张,1,0.1,10.0,active,gemini,支持2k/4k
+hubway,sub2api,2026-07-23T09:52:51Z,27,香蕉2-0.06一张,1,0.1,10.0,active,gemini,支持2k 4k
+hubway,sub2api,2026-07-23T09:52:51Z,30,GROK,0.6,0.06,10.0,active,grok,综合倍率006/欢迎尝鲜
+hubway,sub2api,2026-07-23T09:52:51Z,32,生图-特价-0.02一张,1,0.1,10.0,active,openai,仅支持1K，2分一张
+hubway,sub2api,2026-07-23T09:52:51Z,35,GROK-SUPER,1,0.1,10.0,active,grok,"支持grok全系列模型视频生成480p的0.02一秒720p的0.04一秒
+支持生图2分"
+hubway,sub2api,2026-07-23T09:52:51Z,36,GPT--稳定分组,0.5,0.05,10.0,active,openai,综合倍率0.05，保障稳定输出
+hubway,sub2api,2026-07-23T09:52:51Z,6,GPT--PRO+PLUS,0.8,0.08,10.0,active,openai,综合倍率0.08，智商在线
+hubway,sub2api,2026-07-23T09:52:51Z,7,GPT--活动组003,0.3,0.03,10.0,active,openai,综合倍率0.03，稳定性看渠道状态
+hubway,sub2api,2026-07-23T09:52:51Z,8,CC-KIRO,1.1,0.11000000000000001,10.0,active,anthropic,综合倍率0.11/高缓存/很稳
+hubway,sub2api,2026-07-23T09:52:51Z,9,CC-MAX-满血,9,0.9,10.0,active,anthropic,综合倍率0.9
+iaiguo,sub2api,2026-07-23T09:51:42Z,2,普通,0.19,0.19,1.0,active,openai,gpt
+iaiguo,sub2api,2026-07-23T09:51:42Z,21,生图专用,1,1.0,1.0,active,openai,
+iaiguo,sub2api,2026-07-23T09:51:42Z,24,视频生成专用,1,1.0,1.0,active,openai,Seedance 与 Grok 共用的视频生成专用分组。价格由视频生成模块按对应模型规则计费。
+iaiguo,sub2api,2026-07-23T09:51:42Z,27,claude kiro（亚马逊略差一些）,0.21,0.21,1.0,active,anthropic,
+iaiguo,sub2api,2026-07-23T09:51:42Z,29,banana-image（不选这个也能用）,1,1.0,1.0,active,openai,banana
+iaiguo,sub2api,2026-07-23T09:51:42Z,31,GROK生图（不选也可以）,1,1.0,1.0,active,openai,
+iaiguo,sub2api,2026-07-23T09:51:42Z,33,Claude max（官方满血测试）,1.41,1.41,1.0,active,anthropic,
+iaiguo,sub2api,2026-07-23T09:51:42Z,36,grok cli,0.13,0.13,1.0,active,grok,
+iaiguo,sub2api,2026-07-23T09:51:42Z,9,高水准,0.31,0.31,1.0,active,openai,plus/pro
+klinkw,sub2api,2026-07-23T09:52:20Z,10,Claude-Kiro,0.2,0.2,1.0,active,anthropic,
+klinkw,sub2api,2026-07-23T09:52:20Z,13,Claude Max,1.1,1.1,1.0,active,anthropic,
+klinkw,sub2api,2026-07-23T09:52:20Z,2,ChatGPT Team,0.16,0.16,1.0,active,openai,GPT
+klinkw,sub2api,2026-07-23T09:52:20Z,35,Gork,0.12,0.12,1.0,active,grok,
+klinkw,sub2api,2026-07-23T09:52:20Z,9,ChatGPT 纯Pro分组,0.24,0.24,1.0,active,openai,
+littleapi,sub2api,2026-07-23T09:52:18Z,25,PRO x20,0.17,0.17,1.0,active,openai,"严禁破限提示词，破限封号处理，
+需要批量重构、多文件解析、自动单元测试、持续集成
+处理百万行级大型代码仓库，对限流零容忍
+"
+littleapi,sub2api,2026-07-23T09:52:18Z,49,Claude-max,0.8,0.8,1.0,active,anthropic,
+littleapi,sub2api,2026-07-23T09:52:18Z,52,Gork,0.5,0.5,1.0,active,grok,"Test group, we cannot guarantee its stability."
+littleapi,sub2api,2026-07-23T09:52:18Z,6,Kiro渠道高缓存混合号池,0.13,0.13,1.0,active,anthropic,claude-kiro逆向渠道，无缓存
+littleapi,sub2api,2026-07-23T09:52:18Z,7,Antigravity渠道带缓存,0.42,0.42,1.0,active,anthropic,claude-Antigravity逆向渠道，带缓存
+littleapi,sub2api,2026-07-23T09:52:18Z,8,Gemini Image Pool,0.5,0.5,1.0,active,gemini,gemini系列模型，支持生图
+littleapi,sub2api,2026-07-23T09:52:18Z,9,PLUS混合号池稳定,0.09,0.09,1.0,active,openai,plus为主，pro兜底
+pinaic,sub2api,2026-07-23T09:53:12Z,45,PLUS 渠道,2,0.2,10.0,active,openai,"号池
+兜底渠道
+生图2k1毛"
+pinaic,sub2api,2026-07-23T09:53:12Z,57,Pro 正价池,3,0.3,10.0,active,openai,"自建Pro号池
+生图2k5 毛，不建议生图，仅兼容
+傻逼openai10天封号，搞不动"
+pinaic,sub2api,2026-07-23T09:53:12Z,69,CCMAX,16,1.6,10.0,active,anthropic,claudemax 账号池渠道，据说
+pinaic,sub2api,2026-07-23T09:53:12Z,73,kiro默认,1.2,0.12,10.0,active,anthropic,kiro默认
+pinaic,sub2api,2026-07-23T09:53:12Z,81,kiro高缓,2.4,0.24,10.0,active,anthropic,kiro高缓
+pinaic,sub2api,2026-07-23T09:53:12Z,82,gemini,2,0.2,10.0,active,gemini,
+pinaic,sub2api,2026-07-23T09:53:12Z,83,gemini生图,2,0.2,10.0,active,gemini,2k 4刀 1k 2刀 4k 6 刀
+pinaic,sub2api,2026-07-23T09:53:12Z,84,GROK,2,0.2,10.0,active,grok,
+torchai,newapi,2026-07-23T09:52:43Z,Gemini,Gemini,0.4,0.4,1.0,,,
+torchai,newapi,2026-07-23T09:52:43Z,adobe图,adobe图,1.0,1.0,1.0,,,
+torchai,newapi,2026-07-23T09:52:43Z,claude-max,claude-max,1.4,1.4,1.0,,,max号池
+torchai,newapi,2026-07-23T09:52:43Z,claude-max-高并发,claude-max-高并发,1.6,1.6,1.0,,,claude-max-高并发
+torchai,newapi,2026-07-23T09:52:43Z,claude福利,claude福利,2.0,2.0,1.0,,,
+torchai,newapi,2026-07-23T09:52:43Z,codex-pro,codex-pro,0.3,0.3,1.0,,,pro池
+torchai,newapi,2026-07-23T09:52:43Z,default,default,1.0,1.0,1.0,,,默认分组
+torchai,newapi,2026-07-23T09:52:43Z,dp,dp,0.5,0.5,1.0,,,
+torchai,newapi,2026-07-23T09:52:43Z,gemini画图,gemini画图,1.0,1.0,1.0,,,gemini画图
+torchai,newapi,2026-07-23T09:52:43Z,gpt-image,gpt-image,0.65,0.65,1.0,,,画图池
+torchai,newapi,2026-07-23T09:52:43Z,grok-逆,grok-逆,0.03,0.03,1.0,,,
+torchai,newapi,2026-07-23T09:52:43Z,特价codex,特价codex,0.09,0.09,1.0,,,特价codex（非pro）
+yybb,sub2api,2026-07-23T09:50:22Z,17,Codex Pro,0.2,0.2,1.0,active,openai,"禁止破限,发现封号"
+yybb,sub2api,2026-07-23T09:50:22Z,19,Image2-特价,1,1.0,1.0,active,openai,质量不稳定 0.05一张
+yybb,sub2api,2026-07-23T09:50:22Z,2,Codex,0.15,0.15,1.0,active,openai,"暂时不可用,请勿选择"
+yybb,sub2api,2026-07-23T09:50:22Z,24,Codex Plus,0.1,0.1,1.0,active,openai,
+yybb,sub2api,2026-07-23T09:50:22Z,5,ClaudeCodeKiro,0.5,0.5,1.0,active,anthropic,

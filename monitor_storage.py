@@ -116,11 +116,20 @@ def normalize_groups_dict(data: Mapping[str, Any]) -> list[dict[str, Any]]:
     return groups
 
 
+def _rate_fields(group: Mapping[str, Any]) -> dict[str, Any]:
+    """raw + effective (effective may be absent on pre-getmulti snapshots)."""
+    return {
+        "rate_multiplier": group.get("rate_multiplier"),
+        "rate_multiplier_effective": group.get("rate_multiplier_effective"),
+    }
+
+
 def group_content_json(group: Mapping[str, Any]) -> str:
     payload = {
         "id": group.get("id"),
         "name": group.get("name"),
         "rate_multiplier": group.get("rate_multiplier"),
+        "rate_multiplier_effective": group.get("rate_multiplier_effective"),
         "description": group.get("description", ""),
     }
     return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -132,6 +141,7 @@ def content_hash_groups(groups: list[dict[str, Any]]) -> str:
             "id": g["id"],
             "name": g["name"],
             "rate_multiplier": g["rate_multiplier"],
+            "rate_multiplier_effective": g.get("rate_multiplier_effective"),
             "description": g.get("description", ""),
         }
         for g in groups
@@ -156,11 +166,11 @@ def diff_groups(
                 {
                     "id": gid,
                     "before": {
-                        "rate_multiplier": old_map[gid].get("rate_multiplier"),
+                        **_rate_fields(old_map[gid]),
                         "description": old_map[gid].get("description", ""),
                     },
                     "after": {
-                        "rate_multiplier": new_map[gid].get("rate_multiplier"),
+                        **_rate_fields(new_map[gid]),
                         "description": new_map[gid].get("description", ""),
                     },
                 }
@@ -175,6 +185,7 @@ def diff_groups(
                     "id": g["id"],
                     "name": g["name"],
                     "rate_multiplier": g["rate_multiplier"],
+                    "rate_multiplier_effective": g.get("rate_multiplier_effective"),
                     "description": g.get("description", ""),
                 }
             )
@@ -255,10 +266,18 @@ class PersistResult:
 class SnapshotStore:
     """New-API snapshot writer with tail-event dedup."""
 
-    def __init__(self, data_dir: Path, site_id: str, backend: str = BACKEND_NEWAPI) -> None:
+    def __init__(
+        self,
+        data_dir: Path,
+        site_id: str,
+        backend: str = BACKEND_NEWAPI,
+        *,
+        rate_divisor: float = 1.0,
+    ) -> None:
         self.data_dir = data_dir
         self.site_id = site_id
         self.backend = backend
+        self.rate_divisor = rate_divisor
         self.latest_path = data_dir / "groups_latest.json"
         self.events_path = data_dir / "groups_events.jsonl"
 
@@ -291,6 +310,7 @@ class SnapshotStore:
             "fetched_at": fetched_at,
             "count": len(groups),
             "content_hash": digest,
+            "rate_divisor": self.rate_divisor,
             "groups": groups,
         }
 
@@ -324,6 +344,7 @@ class SnapshotStore:
                         "id": g["id"],
                         "name": g["name"],
                         "rate_multiplier": g["rate_multiplier"],
+                        "rate_multiplier_effective": g.get("rate_multiplier_effective"),
                         "description": g.get("description", ""),
                     }
                     for g in groups

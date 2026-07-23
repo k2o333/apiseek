@@ -7,9 +7,16 @@
 | [groups_all.md](./groups_all.md) | 可读大表（Markdown） |
 | [groups_all.csv](./groups_all.csv) | 表格工具 / Excel |
 | [groups_all.json](./groups_all.json) | 程序读取 |
+| [groups_rates.csv](./groups_rates.csv) | 倍率专用：raw + effective + divisor |
+| [groups_rates.json](./groups_rates.json) | 同上，含站级元数据 |
 
-- 生成时间（UTC）: `2026-07-21T02:52:04Z`
-- 站点数: 10
-- 行数: 108
+**倍率字段：** `rate_multiplier`（远端原样）、`rate_multiplier_effective`（`raw / MONITOR_RATE_DIVISOR`）、`rate_divisor`。pinaic/hubway 通常 divisor=10。
 
-更新方式：各站 timer 更新 latest 后，重新运行合并脚本（或再次让 agent 生成）。
+更新方式：
+
+```bash
+# 倍率表（推荐）
+.venv/bin/python scripts/export_groups_rates.py
+
+# groups_all.* 仍可由 agent/其它合并脚本从 latest 生成
+```

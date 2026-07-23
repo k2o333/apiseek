@@ -12,6 +12,7 @@ from unittest.mock import Mock, patch
 
 import requests
 
+import monitor_rates as rates
 import monitor_storage as store
 import newapi_monitor as mon
 
@@ -138,14 +139,37 @@ class SnapshotTests(unittest.TestCase):
         self.assertNotIn("broken", text)
 
     def test_modified_has_before_after(self) -> None:
-        g1 = self._groups(A=1.0)
-        g2 = store.normalize_groups_dict({"A": {"ratio": 2.0, "desc": "new"}})
+        g1 = rates.annotate_group_rates(self._groups(A=1.0), 1.0)
+        g2 = rates.annotate_group_rates(
+            store.normalize_groups_dict({"A": {"ratio": 2.0, "desc": "new"}}),
+            1.0,
+        )
         self.store.persist_success(g1)
         self.store.persist_success(g2)
         ev = json.loads((self.root / "groups_events.jsonl").read_text().strip().splitlines()[-1])
         self.assertEqual(len(ev["modified"]), 1)
         self.assertEqual(ev["modified"][0]["before"]["rate_multiplier"], 1.0)
         self.assertEqual(ev["modified"][0]["after"]["rate_multiplier"], 2.0)
+        self.assertEqual(ev["modified"][0]["before"]["rate_multiplier_effective"], 1.0)
+        self.assertEqual(ev["modified"][0]["after"]["rate_multiplier_effective"], 2.0)
+
+    def test_divisor_change_marks_modified(self) -> None:
+        raw = self._groups(A=16.0)
+        g1 = rates.annotate_group_rates(raw, 1.0)
+        g2 = rates.annotate_group_rates(raw, 10.0)
+        store_a = store.SnapshotStore(self.root, "botcf", rate_divisor=1.0)
+        store_a.persist_success(g1)
+        store_b = store.SnapshotStore(self.root, "botcf", rate_divisor=10.0)
+        result = store_b.persist_success(g2)
+        self.assertTrue(result.changed)
+        latest = json.loads((self.root / "groups_latest.json").read_text(encoding="utf-8"))
+        self.assertEqual(latest["rate_divisor"], 10.0)
+        self.assertAlmostEqual(latest["groups"][0]["rate_multiplier_effective"], 1.6)
+        ev = json.loads((self.root / "groups_events.jsonl").read_text().strip().splitlines()[-1])
+        self.assertEqual(ev["modified"][0]["before"]["rate_multiplier"], 16.0)
+        self.assertEqual(ev["modified"][0]["before"]["rate_multiplier_effective"], 16.0)
+        self.assertEqual(ev["modified"][0]["after"]["rate_multiplier"], 16.0)
+        self.assertAlmostEqual(ev["modified"][0]["after"]["rate_multiplier_effective"], 1.6)
 
     def test_backend_mismatch_hard_fail(self) -> None:
         g = self._groups(A=1.0)
@@ -208,6 +232,47 @@ class ConfigTests(unittest.TestCase):
             os.environ.pop(marker, None)
             mon.load_config(env, environ=os.environ, project_root=root)
             self.assertNotIn(marker, os.environ)
+
+    def test_rate_divisor_default_and_parse(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = write_env(root / "botcf.env", base_env())
+            cfg = mon.load_config(env, environ={}, project_root=root)
+            self.assertEqual(cfg.rate_divisor, 1.0)
+            env10 = write_env(root / "botcf.env", base_env(MONITOR_RATE_DIVISOR="10"))
+            cfg10 = mon.load_config(env10, environ={}, project_root=root)
+            self.assertEqual(cfg10.rate_divisor, 10.0)
+
+    def test_rate_divisor_invalid(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = write_env(root / "botcf.env", base_env(MONITOR_RATE_DIVISOR="0"))
+            with self.assertRaises(mon.ConfigError):
+                mon.load_config(env, environ={}, project_root=root)
+
+
+class RateAnnotateNewApiTests(unittest.TestCase):
+    def test_annotate_after_normalize(self) -> None:
+        groups = rates.annotate_group_rates(
+            store.normalize_groups_dict({"x": {"ratio": 0.12, "desc": ""}}),
+            1.0,
+        )
+        self.assertAlmostEqual(groups[0]["rate_multiplier_effective"], 0.12)
+        self.assertEqual(groups[0]["rate_multiplier"], 0.12)
+
+    def test_persist_writes_effective_when_divisor_one(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            snap = store.SnapshotStore(root, "botcf", rate_divisor=1.0)
+            groups = rates.annotate_group_rates(
+                store.normalize_groups_dict({"A": {"ratio": 0.4}}),
+                1.0,
+            )
+            snap.persist_success(groups)
+            latest = json.loads((root / "groups_latest.json").read_text(encoding="utf-8"))
+            self.assertEqual(latest["rate_divisor"], 1.0)
+            self.assertEqual(latest["groups"][0]["rate_multiplier"], 0.4)
+            self.assertEqual(latest["groups"][0]["rate_multiplier_effective"], 0.4)
 
 
 class ClientTests(unittest.TestCase):
