@@ -72,6 +72,9 @@ per-site contract reader -> groups_all / future models_all
 
 | 文件 | 职责 |
 |---|---|
+| [freeze-playbook.md](./freeze-playbook.md) | **怎么冻结**：现状清单、门禁、分阶段步骤、产物路径、PR 模板（2026-07-23） |
+| [freeze-execution-plan.md](./freeze-execution-plan.md) | **建议实施方案**：治理修正、可寻址 artifacts、契约拆分、CI 与逐阶段出口条件（2026-07-23） |
+| [goal-prompt.txt](./goal-prompt.txt) | **`/goal` 实现提示词**：默认交付 Phase 0 + Phase 1 + 试点证据（不偷跑 frozen） |
 | [inventory-as-is.md](./inventory-as-is.md) | 会过期的实现、测试、现网数据和 unit gap |
 | [contracts/storage.md](./contracts/storage.md) | groups/models/auth 持久化目标与 legacy 迁移 |
 | [contracts/cli.md](./contracts/cli.md) | CLI mode、退出码、锁与副作用矩阵 |

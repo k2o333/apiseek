@@ -1,0 +1,285 @@
+# Goal: 按 freeze-execution-plan 推进契约冻结基础设施与首批可冻结证据
+
+## 目标
+
+根据 **唯一实施方案权威** 完成开发与验证：
+
+```text
+/root/projects/zhongzhuan/docs/drafts/specs/freeze-execution-plan.md
+```
+
+将 formal-but-draft 契约推进为：**可验证、可迁移、可回滚** 的证据体系 + checker + 测试；在门禁与证据齐备前 **禁止** 把任何 contract 的 `status` 改为 `frozen`。
+
+### 权威与对照（只读顺序）
+
+| 优先级 | 路径 | 用途 |
+|--------|------|------|
+| 1 | `docs/drafts/specs/freeze-execution-plan.md` | **本 goal 唯一实施权威**（阶段、出口、artifact、CI、PR 流程） |
+| 2 | `docs/01 governance/contract-governance.md` | 治理规则（本 goal 可改正式稿以闭合 Phase 0） |
+| 3 | `docs/02 specs/contracts/manifest.yaml` | **状态唯一源**；任何状态判断只读此处，不手抄状态表 |
+| 4 | `docs/02 specs/contracts/*.md` | 正式人读契约（storage/cli/config/provider/…） |
+| 5 | `docs/drafts/specs/freeze-playbook.md` | 操作补充；与 execution-plan 冲突时 **以 execution-plan 为准** |
+| 6 | `docs/drafts/specs/inventory-as-is.md` | 现网/测试 gap（过期信息，勿当 schema 权威） |
+| 7 | 现网代码 `sub2api_monitor.py` / `newapi_monitor.py` / `monitor_storage.py` / `invite_links.py` / models 模块 | **实现现状**；frozen 后不得用偶然行为反向放宽 schema |
+
+### 工作区与环境
+
+```bash
+cd /root/projects/zhongzhuan
+# 一律使用仓库 venv
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python -m unittest discover -s tests -v
+```
+
+- 证据、日志、草稿输出写入 **goal scratch**（`{SCRATCH}`）；禁止写入共享 `/tmp` 当唯一证据。
+- **禁止** 把真实 `sites/*.env`、`data/**` 密钥、token、session 写入仓库或 fixtures。
+- **禁止** 在常规测试/CI 中依赖第三方在线网络；探活仅人工脱敏后入 provider evidence。
+
+---
+
+## 工作方式（强制）
+
+1. 用 **不同 subagent** 分工（可并行则并行）：
+   - **governance/manifest**：Phase 0 文档与 manifest 结构；
+   - **checker/tools**：`tools/contract_check.py` + artifact loader；
+   - **fixtures/schemas**：某 contract 的 schema/vectors（与实现接线可并行起草，但 status 变更必须串行）；
+   - **tests/contract**：门禁与 vectors 重放；
+   - **review**：对照 execution-plan §6–§11 出口条件。
+2. 改 **同一文件**（尤其 `manifest.yaml`、governance、`contract_check.py`）必须 **串行**，避免冲突。
+3. subagent 若不自动返回，**每 10 分钟**查一次任务输出，直到完成或 blocked。
+4. 自己交付全部结果：不把手工步骤甩给用户；不中途问「要不要继续」。
+5. **TDD / 证据驱动**：
+   - 先有 schema/fixture/vector 或失败测试，再补齐实现或 checker；
+   - vectors **必须** 调用 shipped 正式 writer/reader/adapter（禁止在测试里重写一份生产算法只测自己）；
+   - HTTP **只在传输边界 mock**；不把在线 curl 成功当 contract evidence。
+6. 完成前执行本提示词 **Verification plan**，观察成立后再 `update_goal(completed: true)`。
+7. 用 todo 跟踪 Phase 与出口条件；每完成一 Phase 在 `{SCRATCH}/phase-N-exit.md` 写清证据路径与命令输出摘要。
+
+---
+
+## 硬门禁（违反即不合格）
+
+1. **Phase 0 完成前，禁止** 将 manifest 中任何 contract 或 bundle 改为 `status: frozen`。
+2. **禁止** 在 `docs/drafts/` 建立第二套「正式」契约权威；frozen 后 artifact **不得** 引用 `docs/drafts/`。
+3. **禁止** artifact/fixture 用 glob 指向 `data/` 或真实 `sites/*.env`。
+4. **禁止** 用「PR 描述口头 N/A」跳过 gate；N/A 必须写入 manifest + 治理允许 + `reviewed_in`。
+5. **禁止** 未满足 dependency / capability 时冻结消费者 contract。
+6. **禁止** 扩大默认远端 mutation；BotCF models mutation **保持不可启用**。
+7. **禁止** 改变生产 timer + oneshot 模型；deployment 变更须保持 models timer **默认 disabled**。
+8. **禁止** 失败路径覆盖最后成功业务快照（groups/models/invite）。
+9. **禁止** secret 进入普通 stdout/日志/业务 latest/events/fixtures（canary 扫描）。
+10. 单项冻结 PR 顺序（若本 goal 触及 status）：先证据与测试在 `draft` 下通过 checker → **最后** 才改 `frozen` → CI 再验。
+
+---
+
+## 本 Goal 交付范围（默认）
+
+### 必须完成：Phase 0 + Phase 1 + 试点 contract 全套证据（仍 draft）
+
+按 execution-plan §6 / §12：
+
+#### Phase 0 — 治理闭合
+
+1. 修订正式 `docs/01 governance/contract-governance.md`：gate 适用性、N/A 规则、dependency、bundle release（对齐 plan §2）。
+2. 统一 provider 日期语义：`verified_at` / `last_reviewed`；不新增重叠的 `last_probed`。
+3. 正式 specs 边界调整（plan §5）：
+   - invite 拆分：`storage/invite-link-v1` vs `cli/invite-links-v1` vs provider aff；
+   - `storage/auth-behavior-v1`：`public_field_schema: false` + behavior vectors 要求；
+   - provider fixtures **按 capability** 适用；
+   - config example 双向校验范围。
+4. 扩展正式 `manifest.yaml`：`artifact_manifest`、gates、`depends_on`、`bundle.release_contracts` 等（plan §3.1）；**状态保持 draft/planned**。
+5. 登记 planned：`cli/invite-links-v1`、`provider/newapi-legacy-aff-v1`（若尚未存在）。
+6. owners 使用稳定非占位标识（可与现网 `repository-maintainers` 对齐，不得用 `TODO`/`TBD`）。
+
+**Phase 0 出口：** governance 每种 gate 只有一种解释；manifest 结构可解析；invite 归属清晰；**零 frozen 偷跑**。
+
+#### Phase 1 — 证据基础设施
+
+1. `requirements.txt` 增加并锁定：`jsonschema>=4.23,<5`、`PyYAML>=6,<7`；装入 `.venv`。
+2. 实现 `tools/contract_check.py`（plan §4.2）：
+   ```bash
+   .venv/bin/python tools/contract_check.py validate
+   .venv/bin/python tools/contract_check.py list
+   .venv/bin/python tools/contract_check.py list --status draft
+   .venv/bin/python tools/contract_check.py check <contract-id>
+   ```
+   `validate` 须覆盖 plan §4.2 列出的检查项（manifest 完整、路径不越界、artifact 对应、gate、依赖、schema、fixtures、vectors、changelog、frozen 禁 drafts、bundle 闭合等——**已实现项必须真检查；尚未建齐的 artifact 在 draft 下应给出可行动错误，而不是静默通过**）。
+3. 创建 `tests/contract/` + 通用 loader/runner registry。
+4. 建立 `docs/02 specs/contracts/artifacts/` 目录约定（plan §3.3）；空目录不提交。
+5. common secret canary cases：`artifacts/common/secret-scan/`。
+6. `docs/02 specs/contracts/CHANGELOG.md` 模板（可先有结构与首条基础设施条目）。
+7. CI：至少保证本地/脚本可依次跑 plan §4.3 三条命令；若仓库已有 CI 配置则接入，无则提供 `scripts/` 或文档中的一键命令且在 verification 中实际执行。
+8. **负例**：故意删 artifact / 错 schema / 泄漏 canary 时 checker 或 tests **非零退出**（写入 `{SCRATCH}/negative-gates.log`）。
+
+**Phase 1 出口：** checker 能在当前 draft manifest 上运行；**至少一个示例 contract** 完整演示 accept/reject/vector/changelog 路径；正常全量 `tests/` 仍绿。
+
+#### 试点（推荐，仍保持 `status: draft`）
+
+优先 **`storage/newapi-groups-v1`**（plan §12），按 Phase 2B 最小证据包搭齐：
+
+- `artifact.yaml` + latest/event JSON Schema（Draft 2020-12，含 `$id` 与时间 pattern，见 plan §4.1）；
+- positive/negative fixtures（缺字段、错类型、额外字段、未知 version、错 site/backend、边界、secret 注入等）；
+- hash vectors + transition vectors（含 `none->A`、`A->A`、`A->B`、`B->A`、半行、event-before-latest、tail dedup、失败保旧）；
+- 测试通过 runner 调用 **真实** `monitor_storage` / SnapshotStore 路径；
+- secret canary；
+- changelog anchor（migration: none 或显式说明）；
+- manifest 中该 contract 的 `required_artifacts` / gates / `artifact_manifest` 填齐，**status 仍为 draft**。
+
+可选第二试点（时间允许）：`storage/auth-behavior-v1` 的 behavior vectors 骨架（验证「无公共字段 schema 仍有 machine evidence」）。
+
+### 明确不在本 Goal 默认范围内（后续 goal）
+
+除非用户在会话中扩大范围，否则 **不要** 在本 goal 内宣称完成并冻结：
+
+- Phase 5 models 生产迁移演练与 writer 切换；
+- Phase 6 全量 remote mutation 两 backend 全 vectors 并 frozen；
+- Phase 7/8 CLI matrix / systemd 全量 hardening 并 frozen；
+- Phase 9 bundle `frozen`；
+- 任意 contract 的 **`status: frozen` 合并**（可在 PR 草稿中准备，但默认交付停在 **draft + 证据齐 + checker 绿**）。
+
+若提前做完试点且用户未要求 freeze，**停在 draft**，在 `{SCRATCH}/ready-to-freeze.md` 列出剩余 gap 与建议冻结 PR 清单即可。
+
+---
+
+## 核心设计约束（摘自 plan，实现时不得违反）
+
+### Manifest / artifacts
+
+- `required_artifacts` 每个 id 必须在对应 `artifact.yaml` 中存在。
+- 路径：仓库根相对；解析后不得逃出仓库。
+- `kind` 来自 checker 固定枚举；新增 kind 先改工具与测试。
+- frozen 后不得引用 drafts / 真实 data / secret env（本 goal 先实现检查逻辑）。
+
+### Fixtures / vectors
+
+- positive 全 accept；negative 全 reject；negative 用稳定 `error_kind`（文件名或 sidecar），不绑定第三方完整报错串。
+- vector 单 case 目录：`case.yaml` + inputs + expected；runner registry 调正式代码。
+
+### Secret scan
+
+- canary password/JWT/session/API Key/proxy userinfo；
+- 扫描 stdout/stderr/日志/latest/events；
+- 拒绝高风险结构；允许 `key_id`/`error_kind`；禁止粗糙 `key` 正则误报。
+
+### 实现改动原则
+
+- **先兼容读，再升级写**；涉及现网文件格式时先 reader/vectors，再动 writer。
+- 契约边界单一：storage / CLI / provider / config / mutation / deployment 不互相夹带未归属语义。
+- 不把 `docs/drafts/specs` 当第二状态源；状态查看用 checker `list` 或直接读 manifest。
+
+---
+
+## Acceptance criteria
+
+1. **Phase 0 出口条件**（execution-plan §6 Phase 0）全部满足；governance + manifest 结构可被人类与 checker 一致解释。
+2. **Phase 1 出口条件**满足：`contract_check.py validate` 在仓库可运行；故意破坏证据时失败；`tests/contract` + 全量 `tests` 绿。
+3. **试点** `storage/newapi-groups-v1`（或书面说明阻塞原因并改选同优先级 storage 试点）具备 plan §7 该行最小证据包；vectors 绑定真实 storage 实现。
+4. **零 frozen 偷跑**：`manifest.yaml` 中 contracts/bundle 无新增 `frozen`（除非用户显式扩大范围并满足 §8 PR 流程）。
+5. 依赖已写入 `requirements.txt` 且 `.venv` 可安装；文档入口（`docs/02 specs/README.md` 或 contracts README）能找到 checker 与 artifacts 布局说明（简洁，不复制完整状态表）。
+6. 无 secret 入库；`{SCRATCH}/secret-scan.log` 通过。
+7. `{SCRATCH}/phase-0-exit.md`、`phase-1-exit.md`、`pilot-newapi-groups.md` 证据齐套。
+
+---
+
+## Verification plan
+
+在仓库根执行；输出进 `{SCRATCH}/`。
+
+1. **gating — 依赖与 checker**
+   ```bash
+   .venv/bin/python -c "import jsonschema, yaml; print(jsonschema.__version__)"
+   .venv/bin/python tools/contract_check.py list
+   .venv/bin/python tools/contract_check.py validate
+   ```
+   → `{SCRATCH}/checker-validate.log`
+
+2. **gating — contract + 全量测试**
+   ```bash
+   .venv/bin/python -m unittest discover -s tests/contract -t . -v
+   .venv/bin/python -m unittest discover -s tests -t . -v
+   ```
+   → `{SCRATCH}/unittest-contract.log`、`unittest-all.log`
+
+3. **gating — 负例门禁**（至少 2 类）
+   - 临时移走某 required artifact 或改坏 schema → validate/tests 非零；
+   - canary 故意写入假 latest → secret 测试失败。  
+   恢复工作树后记录 → `{SCRATCH}/negative-gates.log`
+
+4. **gating — 试点一致性**
+   - positive fixtures 全过、negative 全拒；
+   - hash/transition vectors 与 `monitor_storage`（或试点选定的正式模块）结果一致；
+   - 对同一 vectors **跑 2 次** 结果一致 → `{SCRATCH}/pilot-replay.log`
+
+5. **gating — 状态审计**
+   ```bash
+   # 确认无意外 frozen（本 goal 默认）
+   .venv/bin/python tools/contract_check.py list --status frozen
+   ```
+   → `{SCRATCH}/status-audit.log`（期望：仅原有状态或仍无 frozen，与 goal 范围一致）
+
+6. **evidence**
+   - `{SCRATCH}/hypothesis.md`：plan 章节 → 仓库文件映射；
+   - `{SCRATCH}/manifest-diff-summary.md`：manifest/governance 变更摘要；
+   - secret-scan 与 review 笔记。
+
+7. **deployment 命令**（仅当本 goal 改动了 unit/installer 时）
+   ```bash
+   systemd-analyze verify ./*.service ./*.timer
+   ```
+
+全部 gating 观察成立后，才可标记 goal 完成。
+
+---
+
+## Implementation approach
+
+1. **Hypothesis**：通读 execution-plan §1–§12，输出 `{SCRATCH}/hypothesis.md`（Phase 0/1 文件树、试点证据矩阵、风险）。
+2. **Phase 0 串行**：governance → 正式 specs 边界 → manifest 结构扩展 → planned 条目；**不改 status 为 frozen**。
+3. **Phase 1**：deps → `contract_check.py` 骨架 → artifact schema 枚举 → tests/contract loader → secret-scan → 负例 → 全量测试保绿。
+4. **试点 2B**：从现有 `monitor_storage.py` + `tests/test_newapi_monitor.py` **提炼** schema/vectors（schema 权威来自正式 storage 契约，不是“当前输出原样 dump”）；绑定真实 writer/reader。
+5. **Review subagent**：对照 plan §6 出口与 §11 清单（在 draft 语义下勾选「证据项」，不勾「已 frozen」）。
+6. 缺口写入 `{SCRATCH}/ready-to-freeze.md` / 后续 goal 边界。
+
+---
+
+## Task checklist（完成时在 plan 中勾选）
+
+- [ ] Hypothesis + 文件映射 → `{SCRATCH}/hypothesis.md`
+- [ ] Phase 0：governance gate 适用性 / N/A / dependency / bundle
+- [ ] Phase 0：正式 specs invite 拆分与 provider capability 表述
+- [ ] Phase 0：manifest 扩展字段与 planned 条目；**无 frozen**
+- [ ] Phase 1：jsonschema + PyYAML 进 requirements 与 venv
+- [ ] Phase 1：`tools/contract_check.py` validate/list/check
+- [ ] Phase 1：`tests/contract/` + loader/runner + secret canary
+- [ ] Phase 1：artifacts 布局 + CHANGELOG 模板 + 负例门禁
+- [ ] 试点：`storage/newapi-groups-v1` artifact/schema/fixtures/vectors + 真实 storage 绑定
+- [ ] Verification plan 全绿；`{SCRATCH}/phase-*-exit.md` 齐套
+- [ ] （默认不做）任何 `status: frozen` / bundle frozen
+
+---
+
+## 风险
+
+| 风险 | 对策 |
+|------|------|
+| 范围膨胀到 Phase 5–9 | 默认只交付 0+1+试点 draft；扩大范围须用户明示 |
+| 从 Python 输出反向生成权威 schema | 以正式 storage.md 不变量为准；实现 gap 记 inventory，不放宽 schema |
+| manifest 大改导致现网文档失效 | 保持 draft；更新 formal README 链接而非复制状态表 |
+| checker 在证据未齐时“假绿” | draft 下缺失 artifact 必须 fail 或显式 `missing` 报告；frozen 规则更严 |
+| 并发改 manifest | 单一 owner 串行 |
+| 误用生产 data 做 fixture | 仅合成/脱敏；禁止提交 data/ |
+| 与 getmulti / models 需求混淆 | 本 goal **不**实现分组倍率；不默认改 models writer |
+
+---
+
+## 完成后的交给用户的摘要（写在 goal 最终回复）
+
+1. 改了哪些正式路径（governance / manifest / tools / tests / artifacts）。
+2. 如何运行 checker 与测试（复制命令）。
+3. 试点 contract 证据路径列表。
+4. **明确声明**：是否已 frozen（默认否）及下一步建议冻结 PR 顺序。
+5. `{SCRATCH}` 关键证据索引。
+
+---
+
+开始执行。Deliver everything within the default scope；用 todo 跟踪；Verification plan 通过后再标记 goal 完成。
