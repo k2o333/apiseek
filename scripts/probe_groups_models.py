@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
-"""Full sub2api flow: groups -> ensure 1 key per group -> /v1/models.
+"""Probe helper: groups -> ensure 1 key per group -> /v1/models.
 
 Uses stored access/refresh tokens under data/<site>/token.json.
 Serial only. Never deletes keys. Redacts secrets in stdout/JSON.
+
+Production path: use sub2api_monitor.py CLI instead:
+  --models-preflight / --models-bootstrap / --models-refresh
+Avoid writing key_preview into shared 0644 artifacts.
 """
 
 from __future__ import annotations

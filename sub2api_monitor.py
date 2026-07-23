@@ -212,6 +212,23 @@ def _check_credential_file_mode(path: Path) -> None:
         )
 
 
+# Models path defaults (Sub2API keys + OpenAI-compatible models).
+DEFAULT_KEYS_PATH = "/api/v1/keys"
+DEFAULT_MODELS_PATH = "/v1/models"
+# Bounded lock wait for bootstrap/daily (covers one groups --once worst case).
+DEFAULT_MODELS_LOCK_WAIT_SECONDS = 120.0
+DEFAULT_MODELS_LOCK_RETRIES = 3
+DEFAULT_MODELS_LOCK_RETRY_SLEEP = 5.0
+# In-process deadline for full models refresh (~TimeoutStartSec=600).
+DEFAULT_MODELS_DEADLINE_SECONDS = 500.0
+
+
+def _env_truthy(raw: str | None) -> bool:
+    if raw is None:
+        return False
+    return str(raw).strip().lower() in ("1", "true", "yes", "on")
+
+
 @dataclass
 class MonitorConfig:
     site_id: str
@@ -222,6 +239,8 @@ class MonitorConfig:
     login_path: str = "/api/v1/auth/login"
     refresh_path: str = "/api/v1/auth/refresh"
     groups_path: str = "/api/v1/groups/available"
+    keys_path: str = DEFAULT_KEYS_PATH
+    models_path: str = DEFAULT_MODELS_PATH
     username_field: str = "email"
     poll_interval_seconds: int = 300
     connect_timeout_seconds: float = 10.0
@@ -234,6 +253,8 @@ class MonitorConfig:
     log_level: str = "INFO"
     events_retention_days: int = EVENTS_RETENTION_DAYS
     env_file: Path | None = None
+    # Default OFF: --once never does T-new until explicitly enabled after bootstrap.
+    models_incremental_enable: bool = False
 
     @property
     def timeout(self) -> tuple[float, float]:
@@ -250,6 +271,14 @@ class MonitorConfig:
     @property
     def lock_file(self) -> Path:
         return self.data_dir / "monitor.lock"
+
+    @property
+    def models_latest_file(self) -> Path:
+        return self.data_dir / "models_latest.json"
+
+    @property
+    def models_events_file(self) -> Path:
+        return self.data_dir / "models_events.jsonl"
 
 
 def validate_config(cfg: MonitorConfig, *, enforce_interval: bool = True) -> None:
@@ -274,6 +303,8 @@ def validate_config(cfg: MonitorConfig, *, enforce_interval: bool = True) -> Non
         ("MONITOR_LOGIN_PATH", cfg.login_path),
         ("MONITOR_REFRESH_PATH", cfg.refresh_path),
         ("MONITOR_GROUPS_PATH", cfg.groups_path),
+        ("MONITOR_KEYS_PATH", cfg.keys_path),
+        ("MONITOR_MODELS_PATH", cfg.models_path),
     ):
         if not _is_fixed_api_path(path):
             raise ConfigError(f"{label} must be a fixed relative path starting with /: {path!r}")
@@ -365,8 +396,12 @@ def load_config(
     login_path = get("MONITOR_LOGIN_PATH", "/api/v1/auth/login") or "/api/v1/auth/login"
     refresh_path = get("MONITOR_REFRESH_PATH", "/api/v1/auth/refresh") or "/api/v1/auth/refresh"
     groups_path = get("MONITOR_GROUPS_PATH", "/api/v1/groups/available") or "/api/v1/groups/available"
+    keys_path = get("MONITOR_KEYS_PATH", DEFAULT_KEYS_PATH) or DEFAULT_KEYS_PATH
+    models_path = get("MONITOR_MODELS_PATH", DEFAULT_MODELS_PATH) or DEFAULT_MODELS_PATH
     username_field = get("MONITOR_USERNAME_FIELD", "email") or "email"
     log_level = get("LOG_LEVEL", "INFO") or "INFO"
+    # Default 0: do not auto T-new / create keys on ordinary --once deploys.
+    models_incremental = _env_truthy(get("MONITOR_MODELS_INCREMENTAL_ENABLE", "0") or "0")
     # Keep paths exactly as configured; validation rejects non-absolute API paths.
 
     cfg = MonitorConfig(
@@ -378,6 +413,8 @@ def load_config(
         login_path=login_path.strip(),
         refresh_path=refresh_path.strip(),
         groups_path=groups_path.strip(),
+        keys_path=keys_path.strip(),
+        models_path=models_path.strip(),
         username_field=username_field,
         poll_interval_seconds=poll_interval,
         connect_timeout_seconds=connect_timeout,
@@ -390,6 +427,7 @@ def load_config(
         log_level=log_level,
         events_retention_days=retention,
         env_file=env_file,
+        models_incremental_enable=models_incremental,
     )
     validate_config(cfg, enforce_interval=enforce_interval)
     return cfg
@@ -1047,18 +1085,73 @@ class InstanceLock:
         self._fh: Any = None
 
     def acquire(self) -> None:
+        """Non-blocking exclusive lock (groups --once)."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._fh = open(self.path, "a+", encoding="utf-8")
         try:
             fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError as exc:
             if exc.errno in (errno.EACCES, errno.EAGAIN):
+                try:
+                    self._fh.close()
+                except OSError:
+                    pass
+                self._fh = None
                 raise ConfigError(f"another monitor instance holds the lock: {self.path}") from exc
             raise
         self._fh.seek(0)
         self._fh.truncate()
         self._fh.write(f"{os.getpid()}\n")
         self._fh.flush()
+
+    def acquire_wait(
+        self,
+        timeout_seconds: float = DEFAULT_MODELS_LOCK_WAIT_SECONDS,
+        *,
+        poll_interval: float = 0.25,
+        time_fn: Callable[[], float] | None = None,
+        sleep_fn: Callable[[float], None] | None = None,
+    ) -> float:
+        """Bounded wait for exclusive lock (bootstrap / models-refresh).
+
+        Returns wait time in seconds. Raises ConfigError if timeout elapses.
+        """
+        tfn = time_fn or time.monotonic
+        sfn = sleep_fn or time.sleep
+        started = tfn()
+        deadline = started + max(0.0, float(timeout_seconds))
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._fh = open(self.path, "a+", encoding="utf-8")
+        while True:
+            try:
+                fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError as exc:
+                if exc.errno not in (errno.EACCES, errno.EAGAIN):
+                    try:
+                        self._fh.close()
+                    except OSError:
+                        pass
+                    self._fh = None
+                    raise
+                now = tfn()
+                if now >= deadline:
+                    try:
+                        self._fh.close()
+                    except OSError:
+                        pass
+                    self._fh = None
+                    waited = now - started
+                    raise ConfigError(
+                        f"lock wait timed out after {waited:.1f}s: {self.path}"
+                    ) from exc
+                remaining = deadline - now
+                sfn(min(poll_interval, max(0.01, remaining)))
+        self._fh.seek(0)
+        self._fh.truncate()
+        self._fh.write(f"{os.getpid()}\n")
+        self._fh.flush()
+        return tfn() - started
 
     def release(self) -> None:
         if self._fh is not None:
@@ -1097,6 +1190,8 @@ class GroupMonitor:
         self.failures = 0
 
     def poll_once(self) -> dict[str, Any]:
+        previous = load_latest(self.snapshots.latest_path)
+        prev_groups = previous.get("groups") if previous else None
         groups = self.client.get_groups()
         record = self.snapshots.persist_success(groups)
         self.failures = 0
@@ -1115,7 +1210,123 @@ class GroupMonitor:
                 group.get("rate_multiplier", "-"),
                 group.get("status", "-"),
             )
+        # T-new: only truly added groups when incremental on AND bootstrap completed.
+        # Partial models failure must not fail --once (exit 0 if groups ok).
+        try:
+            self._maybe_t_new(groups, prev_groups)
+        except Exception as exc:
+            LOG.warning(
+                "site=%s phase=models T-new non-fatal error: %s",
+                self.config.site_id,
+                type(exc).__name__,
+            )
         return record
+
+    def _maybe_t_new(
+        self,
+        groups: list[dict[str, Any]],
+        prev_groups: list[dict[str, Any]] | None,
+    ) -> None:
+        """Incremental models for true added groups only (design §5.4)."""
+        if not self.config.models_incremental_enable:
+            return
+        # Lazy import keeps groups-only path free of models dependency at import time.
+        import sub2api_models as models_mod
+
+        store = models_mod.ModelsStore(
+            self.config.data_dir,
+            self.config.site_id,
+            models_path=self.config.models_path,
+        )
+        rec = store.load()
+        if not rec.get("bootstrap_completed_at"):
+            LOG.debug(
+                "site=%s phase=models skip T-new: bootstrap_completed_at absent",
+                self.config.site_id,
+            )
+            return
+
+        prev_map = {
+            models_mod.norm_id(g.get("id")): g
+            for g in (prev_groups or [])
+            if isinstance(g, Mapping) and g.get("id") is not None
+        }
+        added = [
+            g
+            for g in groups
+            if isinstance(g, Mapping)
+            and g.get("id") is not None
+            and models_mod.norm_id(g.get("id")) not in prev_map
+        ]
+        if not added:
+            return
+
+        refresh_set = []
+        for g in added:
+            entry = store.get_group(g.get("id"))
+            if models_mod.should_attempt_now(entry):
+                refresh_set.append(g)
+            else:
+                LOG.info(
+                    "site=%s phase=models skip group_id=%s next_retry_at=%s",
+                    self.config.site_id,
+                    models_mod.norm_id(g.get("id")),
+                    entry.get("next_retry_at"),
+                )
+        if not refresh_set:
+            return
+
+        LOG.info(
+            "site=%s phase=models T-new count=%d",
+            self.config.site_id,
+            len(refresh_set),
+        )
+        km = models_mod.KeysModelsClient(
+            base_url=self.config.base_url,
+            get_access_token=lambda: self.client.token_store.state.access_token,
+            session=self.client.session,
+            recover_auth=self.client.recover_auth,
+            keys_path=self.config.keys_path,
+            models_path=self.config.models_path,
+            timeout=self.config.timeout,
+        )
+        try:
+            ensure_res = models_mod.ensure_coverage(
+                refresh_set,
+                list_keys_fn=km.list_keys_all,
+                create_fn=km.create_key,
+                bind_fn=km.bind_key,
+            )
+            if ensure_res.paging_incomplete:
+                LOG.warning(
+                    "site=%s phase=ensure paging_incomplete; create aborted",
+                    self.config.site_id,
+                )
+            keys_after = ensure_res.keys
+            LOG.info(
+                "site=%s phase=ensure created=%d failures=%d paging_incomplete=%s",
+                self.config.site_id,
+                ensure_res.created,
+                len(ensure_res.failures),
+                ensure_res.paging_incomplete,
+            )
+            result = models_mod.refresh_models_for_groups(
+                refresh_set,
+                keys_after,
+                store,
+                km.list_models,
+                source="incremental",
+            )
+            store.set_incremental_at()
+            LOG.info(
+                "site=%s phase=models T-new ok=%d fail=%d",
+                self.config.site_id,
+                result.ok_count,
+                result.failed_count,
+            )
+        finally:
+            # Do not close shared session owned by AuthGroupClient.
+            pass
 
     def backoff_delay(self, exc: Exception | None = None) -> float:
         idx = min(max(self.failures - 1, 0), len(BACKOFF_SECONDS) - 1)
@@ -1307,6 +1518,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=f"max poll attempts in --once mode (default {DEFAULT_ONCE_ATTEMPTS})",
     )
     parser.add_argument("--validate", action="store_true", help="validate config only")
+    parser.add_argument(
+        "--models-preflight",
+        action="store_true",
+        help="read-only capability check for keys/models (never creates keys)",
+    )
+    parser.add_argument(
+        "--models-bootstrap",
+        action="store_true",
+        help="explicit cold start: ensure keys + full models + bootstrap_completed_at",
+    )
+    parser.add_argument(
+        "--models-refresh",
+        action="store_true",
+        help="daily full models refresh: re-GET groups + ensure + models",
+    )
     return parser.parse_args(argv)
 
 
@@ -1325,45 +1551,276 @@ def build_monitor(config: MonitorConfig) -> tuple[GroupMonitor, InstanceLock, Au
     return monitor, lock, client
 
 
+def build_keys_models_client(config: MonitorConfig, client: AuthGroupClient) -> Any:
+    import sub2api_models as models_mod
+
+    return models_mod.KeysModelsClient(
+        base_url=config.base_url,
+        get_access_token=lambda: client.token_store.state.access_token,
+        session=client.session,
+        recover_auth=client.recover_auth,
+        keys_path=config.keys_path,
+        models_path=config.models_path,
+        timeout=config.timeout,
+    )
+
+
+def run_models_preflight(config: MonitorConfig, client: AuthGroupClient) -> int:
+    """Read-only preflight; exit 0 if capable, else non-zero. Never POST keys."""
+    import sub2api_models as models_mod
+
+    client.ensure_token()
+    km = build_keys_models_client(config, client)
+    result = models_mod.preflight_checks(
+        groups_fn=client.get_groups,
+        list_keys_fn=km.list_keys_all,
+        list_models_fn=km.list_models,
+    )
+    LOG.info(
+        "site=%s phase=preflight ok=%s checks=%s failures=%s",
+        config.site_id,
+        result.ok,
+        json.dumps(result.checks, ensure_ascii=False, sort_keys=True),
+        result.failures,
+    )
+    print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2, sort_keys=True))
+    return 0 if result.ok else 1
+
+
+def acquire_models_lock(
+    lock: InstanceLock,
+    *,
+    wait_seconds: float = DEFAULT_MODELS_LOCK_WAIT_SECONDS,
+    max_retries: int = DEFAULT_MODELS_LOCK_RETRIES,
+    retry_sleep: float = DEFAULT_MODELS_LOCK_RETRY_SLEEP,
+) -> float:
+    """Bounded wait + limited in-process retries for bootstrap/refresh."""
+    last_exc: Exception | None = None
+    total_wait = 0.0
+    for attempt in range(1, max(1, max_retries) + 1):
+        try:
+            waited = lock.acquire_wait(wait_seconds)
+            total_wait += waited
+            LOG.info(
+                "phase=lock acquired wait_ms=%.0f attempt=%d/%d",
+                total_wait * 1000.0,
+                attempt,
+                max_retries,
+            )
+            return total_wait
+        except ConfigError as exc:
+            last_exc = exc
+            LOG.warning(
+                "phase=lock wait failed attempt=%d/%d: %s",
+                attempt,
+                max_retries,
+                exc,
+            )
+            if attempt >= max_retries:
+                break
+            time.sleep(retry_sleep)
+    raise ConfigError(str(last_exc) if last_exc else "lock acquire failed")
+
+
+def run_models_full(
+    config: MonitorConfig,
+    client: AuthGroupClient,
+    *,
+    bootstrap: bool,
+) -> int:
+    """Bootstrap or daily refresh: re-GET groups, ensure, full models. Partial fail → ≠0."""
+    import sub2api_models as models_mod
+
+    phase = "bootstrap" if bootstrap else "refresh"
+    source = "bootstrap" if bootstrap else "daily"
+    started = time.monotonic()
+    deadline = started + DEFAULT_MODELS_DEADLINE_SECONDS
+
+    client.ensure_token()
+    if bootstrap:
+        km0 = build_keys_models_client(config, client)
+        pf = models_mod.preflight_checks(
+            groups_fn=client.get_groups,
+            list_keys_fn=km0.list_keys_all,
+            list_models_fn=km0.list_models,
+        )
+        if not pf.ok:
+            LOG.error(
+                "site=%s phase=preflight failed before bootstrap: %s",
+                config.site_id,
+                pf.failures,
+            )
+            print(json.dumps(pf.to_dict(), ensure_ascii=False, indent=2, sort_keys=True))
+            return 1
+
+    km = build_keys_models_client(config, client)
+    # Must re-GET groups (do not trust only latest on disk).
+    groups = client.get_groups()
+    monitor = GroupMonitor(config, client)
+    try:
+        monitor.snapshots.persist_success(groups)
+    except Exception as exc:
+        LOG.warning(
+            "site=%s groups persist during %s: %s",
+            config.site_id,
+            phase,
+            type(exc).__name__,
+        )
+
+    store = models_mod.ModelsStore(
+        config.data_dir,
+        config.site_id,
+        models_path=config.models_path,
+    )
+    ensure_res = models_mod.ensure_coverage(
+        groups,
+        list_keys_fn=km.list_keys_all,
+        create_fn=km.create_key,
+        bind_fn=km.bind_key,
+    )
+    LOG.info(
+        "site=%s phase=ensure created=%d failures=%d paging_incomplete=%s",
+        config.site_id,
+        ensure_res.created,
+        len(ensure_res.failures),
+        ensure_res.paging_incomplete,
+    )
+    if ensure_res.paging_incomplete:
+        LOG.error(
+            "site=%s phase=ensure paging_incomplete; create already aborted",
+            config.site_id,
+        )
+
+    keys_after = ensure_res.keys
+    result = models_mod.refresh_models_for_groups(
+        groups,
+        keys_after,
+        store,
+        km.list_models,
+        source=source,
+        deadline=deadline,
+        time_fn=time.monotonic,
+    )
+    target = len(
+        [g for g in groups if isinstance(g, Mapping) and g.get("id") is not None]
+    )
+    failed = result.failed_count + result.skipped_deadline
+    ok = result.ok_count
+    store.update_full_meta(
+        target=target,
+        ok=ok,
+        failed=failed,
+        bootstrap=bootstrap,
+    )
+
+    summary = {
+        "site_id": config.site_id,
+        "phase": phase,
+        "keys_created": ensure_res.created,
+        "paging_incomplete": ensure_res.paging_incomplete,
+        "target": target,
+        "ok": ok,
+        "failed": failed,
+        "ensure_failures": ensure_res.failures,
+        "models_errors": result.errors,
+        "elapsed_s": round(time.monotonic() - started, 2),
+    }
+    LOG.info(
+        "site=%s phase=%s keys_created=%d models_ok=%d models_fail=%d",
+        config.site_id,
+        phase,
+        ensure_res.created,
+        ok,
+        failed,
+    )
+    print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
+
+    if failed > 0 or ensure_res.paging_incomplete or ensure_res.failures:
+        return 1
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     try:
         config = load_config(args.env_file)
     except ConfigError as exc:
-        # Logging may not be configured yet.
         print(f"config error: {exc}", file=sys.stderr)
         return 2
 
     setup_logging(config.log_level)
     LOG.info(
-        "site=%s name=%s base=%s data_dir=%s",
+        "site=%s name=%s base=%s data_dir=%s models_incremental=%s",
         config.site_id,
         config.site_name,
         config.base_url,
         config.data_dir,
+        int(config.models_incremental_enable),
     )
 
     if args.validate:
         LOG.info("site=%s configuration valid", config.site_id)
         return 0
 
-    monitor, lock, client = build_monitor(config)
-    try:
-        lock.acquire()
-    except ConfigError as exc:
-        LOG.error("%s", exc)
+    models_flags = (
+        bool(args.models_preflight)
+        + bool(args.models_bootstrap)
+        + bool(args.models_refresh)
+    )
+    if models_flags > 1:
+        print(
+            "error: use only one of --models-preflight/--models-bootstrap/--models-refresh",
+            file=sys.stderr,
+        )
+        return 2
+    if args.once and models_flags:
+        print("error: --once cannot combine with models CLI flags", file=sys.stderr)
         return 2
 
+    monitor, lock, client = build_monitor(config)
     signal.signal(signal.SIGTERM, stop_handler)
     signal.signal(signal.SIGINT, stop_handler)
 
     try:
-        if args.once:
-            return monitor.run_once(max_attempts=args.once_attempts)
-        return monitor.run_loop()
+        if args.models_preflight:
+            try:
+                lock.acquire()
+            except ConfigError as exc:
+                LOG.error("%s", exc)
+                return 2
+            try:
+                return run_models_preflight(config, client)
+            finally:
+                lock.release()
+
+        if args.models_bootstrap or args.models_refresh:
+            try:
+                acquire_models_lock(lock)
+            except ConfigError as exc:
+                LOG.error("%s", exc)
+                return 2
+            try:
+                return run_models_full(
+                    config,
+                    client,
+                    bootstrap=bool(args.models_bootstrap),
+                )
+            finally:
+                lock.release()
+
+        try:
+            lock.acquire()
+        except ConfigError as exc:
+            LOG.error("%s", exc)
+            return 2
+        try:
+            if args.once:
+                return monitor.run_once(max_attempts=args.once_attempts)
+            return monitor.run_loop()
+        finally:
+            lock.release()
     finally:
         client.close()
-        lock.release()
 
 
 if __name__ == "__main__":

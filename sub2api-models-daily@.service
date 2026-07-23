@@ -1,0 +1,18 @@
+[Unit]
+Description=Sub2API daily models refresh (%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/projects/zhongzhuan
+ExecStart=/root/projects/zhongzhuan/.venv/bin/python \
+  /root/projects/zhongzhuan/sub2api_monitor.py \
+  --env-file /root/projects/zhongzhuan/sites/%i.env --models-refresh
+TimeoutStartSec=600
+Nice=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/root/projects/zhongzhuan/data
+# Intentionally no Install section: enable the timer only, never this service.

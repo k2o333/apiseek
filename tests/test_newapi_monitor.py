@@ -67,6 +67,14 @@ class NormalizeTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             store.normalize_groups_dict({})
 
+    def test_group_names_are_trimmed_and_collisions_fail(self) -> None:
+        groups = store.normalize_groups_dict({"  alpha  ": {"ratio": 1}})
+        self.assertEqual(groups[0]["id"], "alpha")
+        with self.assertRaises(ValueError):
+            store.normalize_groups_dict(
+                {"alpha": {"ratio": 1}, " alpha ": {"ratio": 2}}
+            )
+
 
 class SnapshotTests(unittest.TestCase):
     def setUp(self) -> None:

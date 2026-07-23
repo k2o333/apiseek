@@ -25,11 +25,12 @@ Discover browser behavior once, then prefer the documented HTTP API for unattend
 8. Verify access with the available-groups endpoint and validate the JSON envelope before consuming data.
 
 Read [references/api-contract.md](references/api-contract.md) for endpoints, storage keys, response shapes, and verified constraints.
+For repository changes, also read [the formal provider and config contracts](../../docs/02%20specs/README.md); skill references cannot override their declared status.
 
 ## Security
 
 - Load credentials from a mode-600 environment file or secret manager.
-- Store non-secret site metadata in `sites.yaml`; reference a separate mode-600 credential file for each site.
+- Store each site's metadata and credentials in `sites/<site-id>.env` with mode `0600`; this repository does not use `sites.yaml`.
 - Redact passwords, access tokens, and refresh tokens from logs and committed artifacts.
 - Return a token verbatim only when the authorized user explicitly requests it.
 - Avoid browser automation for long-running jobs unless CAPTCHA, browser attestation, or an equivalent control makes direct API login unavailable.

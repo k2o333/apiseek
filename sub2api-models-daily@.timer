@@ -1,0 +1,14 @@
+[Unit]
+Description=Daily Sub2API models refresh (%i)
+# Do not add Requires= on the oneshot service: enable/start of the timer would
+# immediately pull the service and bypass calendar semantics.
+
+[Timer]
+OnCalendar=*-*-* 00:00:00 Asia/Shanghai
+RandomizedDelaySec=300
+Persistent=true
+AccuracySec=1min
+Unit=sub2api-models-daily@%i.service
+
+[Install]
+WantedBy=timers.target

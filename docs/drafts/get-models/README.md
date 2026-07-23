@@ -1,5 +1,7 @@
 # Sub2API 分组模型采集方案（get-models）
 
+> **正式替代入口：** [Sub2API models 当前实现设计](../../03%20designs/sub2api-models.md) 与 [正式契约](../../02%20specs/README.md)。本目录保留需求、评审、探针和实施清单。
+
 ## 目标
 
 在现有 **Sub2API 分组监控** 之上，为每个站点、每个可用分组维护 **可用 API Key 覆盖**，并持久记录 **该分组模型列表**。
@@ -23,8 +25,8 @@
 
 ## 适用范围
 
-**Sub2API：** aiapibank, aresaicode, hubway, iaiguo, klinkw, littleapi, pinaic, yybb；aijws 须 preflight。  
-**排除 New-API：** botcf, torchai。
+**Sub2API：** aiapibank, aresaicode, hubway, iaiguo, klinkw, littleapi, pinaic, yybb。  
+**排除：** New-API（botcf, torchai）；**aijws** 已从活跃站表剔除（登录 403 / 不可用，env 为 `sites/aijws.env.disabled`，不再参与 monitor/bootstrap）。
 
 **站点能力硬前提：** `GET /api/v1/keys` **可回读完整 secret**；分页可证明取全。不满足则 **不启用、不 create**。
 

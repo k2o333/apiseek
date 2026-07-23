@@ -7,10 +7,33 @@
 
 **生产路径：** `sub2api-monitor-once@<site>.timer` → oneshot → `python … --once`。
 
+### 分组模型（get-models，默认关闭远端写）
+
+模块 `sub2api_models.py`：按组 ensure 可用 API Key（确定性名 `sub2api-monitor:g:<id>`）并落盘模型列表。  
+**默认不创建 Key、不拉 models**；须 preflight + 显式 bootstrap。增量 T-new 默认关（`MONITOR_MODELS_INCREMENTAL_ENABLE=0`）。
+
+```bash
+# 只读能力检查（不 create）
+.venv/bin/python sub2api_monitor.py --env-file sites/pinaic.env --models-preflight
+# 显式冷启动（ensure + 全量 models）
+.venv/bin/python sub2api_monitor.py --env-file sites/pinaic.env --models-bootstrap
+# 日更全量
+.venv/bin/python sub2api_monitor.py --env-file sites/pinaic.env --models-refresh
+```
+
+数据新增：`data/<site>/models_latest.json`、`models_events.jsonl`。  
+日更 timer：`sub2api-models-daily@`（上海 00:00 + 0～300s 抖动）；**安装不默认 enable**，bootstrap 后再：
+
+```bash
+./install_service.sh --enable-models pinaic
+```
+
+正式设计：[docs/03 designs/sub2api-models.md](docs/03%20designs/sub2api-models.md)。
+
 ## New-API / legacy session（BotCF、TorchAI）
 
 独立入口 `newapi_monitor.py`（**不要**与 Sub2API 混用 DATA_DIR）。Session cookie 鉴权；TorchAI 需 `new-api-user` 头。  
-设计文档：`docs/drafts/newapi/`。
+正式设计：[docs/03 designs/newapi-monitor.md](docs/03%20designs/newapi-monitor.md)；模型链路见 [newapi-models.md](docs/03%20designs/newapi-models.md)。
 
 ```bash
 cp sites/botcf.env.example sites/botcf.env && chmod 600 sites/botcf.env
@@ -20,13 +43,22 @@ cp sites/botcf.env.example sites/botcf.env && chmod 600 sites/botcf.env
 ./install_newapi_service.sh botcf torchai
 ```
 
-数据：`data/<id>/auth_state.json`（0600）、`groups_latest.json`、`groups_events.jsonl`。  
-Timer：`newapi-monitor-once@<id>.timer`。
+模型采集默认不执行远端写；须先准备一个 seed Token，再显式运行：
+
+```bash
+.venv/bin/python newapi_monitor.py --env-file sites/torchai.env --models-preflight
+.venv/bin/python newapi_monitor.py --env-file sites/torchai.env --models-bootstrap
+.venv/bin/python newapi_monitor.py --env-file sites/torchai.env --models-refresh
+```
+
+数据：`data/<id>/auth_state.json`（0600）、`groups_latest.json`、`groups_events.jsonl`；完成模型 bootstrap 后另有 `models_latest.json`、`models_events.jsonl`。
+Groups timer：`newapi-monitor-once@<id>.timer`。模型日更模板 `newapi-models-daily@` 会安装但默认不 enable；bootstrap 成功后显式执行 `./install_newapi_service.sh --enable-models <id>`。T-new 默认关闭，只有设置 `MONITOR_MODELS_INCREMENTAL_ENABLE=1` 且已 bootstrap 才处理真正新增组。
 
 ## 目录
 
 ```text
-sub2api_monitor.py                 # Sub2API 入口
+sub2api_monitor.py                 # Sub2API 入口（groups + models CLI）
+sub2api_models.py                  # keys reconcile + models snapshot
 newapi_monitor.py                  # New-API 采集入口
 monitor_storage.py                 # New-API 快照/锁/尾事件去重
 sites/<site-id>.env                # 每站配置（0600，不入库）
@@ -34,9 +66,13 @@ data/<site-id>/
   token.json | auth_state.json     # 按后端
   groups_latest.json
   groups_events.jsonl
+  models_latest.json               # 可选；bootstrap 后
+  models_events.jsonl
   monitor.lock
 sub2api-monitor-once@.{service,timer}
+sub2api-models-daily@.{service,timer}  # 模型日更（默认不 enable）
 newapi-monitor-once@.{service,timer}
+newapi-models-daily@.{service,timer}  # 模型日更（默认不 enable）
 sub2api-monitor@.service           # 旧 simple 常驻（回滚用）
 ```
 
@@ -145,6 +181,10 @@ systemctl edit sub2api-monitor-once@<id>.timer
 - `sites/*.env` 与 `data/` 已在 `.gitignore`
 - 勿用未知公共代理传输账号密码
 
-## 设计文档
+## 正式文档
 
-可执行方案：`docs/drafts/onethred/final/architecture.md`
+- 文档治理与权威顺序：[docs/01 governance](docs/01%20governance/README.md)
+- 契约及冻结状态：[docs/02 specs](docs/02%20specs/README.md)
+- 当前实现设计：[docs/03 designs](docs/03%20designs/README.md)
+
+评审原文、探针、实施清单和历史替代方案保留在 `docs/drafts/`，不作为日常开发与运维的主入口。

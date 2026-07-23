@@ -1,5 +1,7 @@
 # Multi-Site Sub2API Architecture (v1)
 
+> Historical skill summary. Use [the formal current design](../../../docs/03%20designs/sub2api-monitor.md) and [formal contracts](../../../docs/02%20specs/README.md) for engineering decisions.
+
 ## Configuration Boundaries
 
 First version uses **one env file per site**, not `sites.yaml`:
@@ -40,7 +42,8 @@ SQLite / Prometheus / central alert service are **non-goals** for v1. Revisit on
 
 ## Process Model
 
-- One process per site (systemd template instance `%i`)
+- One short-lived process per site invocation (`sub2api-monitor-once@%i.timer` + oneshot)
 - Instance lock under `data/<site>/monitor.lock`
 - Shared code: `sub2api_monitor.py` only — no per-site Python copies
-- New site = new env + `systemctl enable --now sub2api-monitor@<id>`
+- New site = new env + `systemctl enable --now sub2api-monitor-once@<id>.timer`
+- Legacy `sub2api-monitor@<id>.service` is rollback-only; same-site dual run is forbidden

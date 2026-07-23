@@ -54,7 +54,7 @@
 - [ ] `sub2api-models-daily@`：`OnCalendar=*-*-* 00:00:00 Asia/Shanghai` + `RandomizedDelaySec=300`
 - [ ] `TimeoutStartSec=600`；锁碰撞验收
 - [ ] install 脚本：不默认对未 bootstrap 站强行开启写路径
-- [ ] 站表：aiapibank, aresaicode, hubway, iaiguo, klinkw, littleapi, pinaic, yybb；aijws preflight 过后再 create
+- [x] 站表：aiapibank, aresaicode, hubway, iaiguo, klinkw, littleapi, pinaic, yybb（**aijws 已剔除**，env → `aijws.env.disabled`）
 
 ## Phase 6 — 汇总与文档
 

@@ -1,5 +1,7 @@
 # Sub2API Monitor Contract
 
+> Historical skill reference. The formal controlled entry is [docs/02 specs](../../../docs/02%20specs/README.md); current operation is documented in [sub2api-monitor.md](../../../docs/03%20designs/sub2api-monitor.md). This file must not override them.
+
 Defaults below are verified for AIAPIBANK and PinAI. Verify each new sub2api deployment and record path overrides in that site's `sites/<id>.env`.
 
 ## Configuration
@@ -43,7 +45,7 @@ Keep the User-Agent stable across login, refresh, and groups. Do not embed crede
 4. On Cloudflare/geo HTML 403: treat as region/egress — do not login loop.
 5. On 429: honor `Retry-After`. On timeout/5xx: keep token, backoff.
 6. Validate `data` is a list; never treat error bodies as empty groups.
-7. Write latest (+ event if hash changed); sleep `interval - elapsed + jitter`.
+7. Write latest (+ event if hash changed). In production `--once`, exit after the bounded round; only foreground loop mode sleeps by the env interval.
 
 Timeouts: `timeout=(connect, read)`.
 
@@ -65,14 +67,17 @@ Per site under `data/<site-id>/`:
 
 ## Supervision
 
-Template unit `sub2api-monitor@.service`:
+Production templates are `sub2api-monitor-once@.service` and `.timer`:
 
-- Exec: project venv + `sub2api_monitor.py --env-file sites/%i.env`
-- `Restart=always`, `RestartSec=10`, `After/Wants=network-online.target`
+- Exec: project venv + `sub2api_monitor.py --env-file sites/%i.env --once`
+- Timer: `OnUnitInactiveSec=240s`, `RandomizedDelaySec=60s`, `AccuracySec=1s`
+- Service: `Type=oneshot`, `TimeoutStartSec=240`, no `[Install]` and no `Restart=always`
 - Hardening: `NoNewPrivileges`, `PrivateTmp`, `ProtectSystem=strict`, `ReadWritePaths=…/data`
+- The old `sub2api-monitor@.service` remains only for rollback; same-site dual run is forbidden.
 
 ```bash
-systemd-analyze verify /etc/systemd/system/sub2api-monitor@.service
-systemctl enable --now sub2api-monitor@pinaic
-systemctl enable --now sub2api-monitor@aiapibank
+systemd-analyze verify /etc/systemd/system/sub2api-monitor-once@.service \
+  /etc/systemd/system/sub2api-monitor-once@.timer
+systemctl enable --now sub2api-monitor-once@pinaic.timer
+systemctl enable --now sub2api-monitor-once@aiapibank.timer
 ```

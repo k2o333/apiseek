@@ -1,6 +1,8 @@
 # 最终方案（修订后）
 
-本目录是 `docs/drafts/onethred/` 的**唯一执行方向**。
+> **正式替代入口：** [Sub2API groups 当前实现设计](../../../03%20designs/sub2api-monitor.md) 与 [部署契约](../../../02%20specs/contracts/deployment-security.md)。
+
+本目录是 `docs/drafts/onethred/` 历史方案中的最终评审版本；当前执行方向以正式实现设计为入口。
 
 | 文档 | 说明 |
 |------|------|

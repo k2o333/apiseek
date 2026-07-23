@@ -254,7 +254,7 @@ sub2api_models.py
 4. 实现最小 `models_latest` + events，完成失败保旧与逐组 checkpoint。
 5. 单站显式 bootstrap，连续跑两次证明第二次不创建 Key。
 6. 默认关闭的 T-new 单站灰度，再接 daily timer 和锁碰撞验收。
-7. 最后逐站开启；`aijws` 在 capability preflight 全部通过前不进入创建阶段。
+7. 最后逐站开启。`aijws` 已从活跃站表剔除（不再 preflight/create）。
 
 ## 9. 最终判断
 

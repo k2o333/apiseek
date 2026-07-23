@@ -1,0 +1,108 @@
+# Goal: 实现 New-API get-models（Token 覆盖 + 模型快照）
+
+## 目标
+根据 /root/projects/zhongzhuan/docs/drafts/newapi/get-models/ 的需求，完成全部开发与验证。
+
+**唯一需求权威：** docs/drafts/newapi/get-models/requirements.md（已吸收 review.md 全部 P0/P1）。
+**探针证据（仅 torchai 正常路径）：** docs/drafts/newapi/get-models/touch_ai.md。
+**对照实现（调度/状态/锁经验，禁止照搬 usable 而不 hydration）：** docs/drafts/get-models/ + 现网 sub2api_models.py / sub2api_monitor.py。
+**现网基线：** newapi_monitor.py + monitor_storage.py + tests/test_newapi_monitor.py（groups 已上线）。
+
+## 工作方式（强制）
+1. 用**不同 subagent** 分别做：hypothesis/契约验证、TDD 开发、测试扩展、validation（CLI/退出码）、review（对照 requirements §5–7）。
+2. 能并行就并行（例如：纯函数+分页测试 vs ModelsStore 测试可并行；**CLI 接线串行**，避免多人改 newapi_monitor.py）。
+3. subagent 若不自动及时返回结果，**每 10 分钟**用任务输出工具监控一次，直到完成或 blocked。
+4. 自己交付全部结果：不把手工步骤留给用户；不中途问「要不要继续」。
+5. TDD：先写失败测试再实现；HTTP **只在传输边界 mock**；测试必须驱动 **shipped 真实函数**（禁止硬编码期望表冒充 reconcile、禁止在测试里重实现算法）。
+6. 证据写入 goal scratch（{SCRATCH}，勿用共享 /tmp）；密钥扫描；相关 pytest 全绿。
+7. 完成前执行本提示词的 **Verification plan**，观察成立后再 update_goal(completed: true)。
+
+## 编码门禁（P0 — 违反即不合格）
+在实现 **任何 POST create Token** 或 **写 models_latest** 之前：
+
+1. **只读脱敏探针**（requirements §6）补齐并写入 {SCRATCH}/token-contract.md（或 docs/drafts/newapi/site-notes 追加节）：
+   - token list 完整 envelope、分页参数、页码起点、total/has_more
+   - status 枚举；expired_time 单位与 -1
+   - model_limits_enabled / allow_ips 等 inventory-suitable 字段
+   - HTTP 200 + success=false 语义
+   - PUT 能否修复 managed（重绑/启用/关 limits）
+   - Token name 长度与唯一性
+2. 若 live 网络/凭据不可用：用 touch_ai + 合理假设写清「待实站确认」项，**create 路径仍须 mock 覆盖全部 P0 测试**；不得假装 live create 成功。
+3. **禁止** 零 Token 自动首创；preflight 要求运维 seed Token。
+4. **禁止** 未 bootstrap_completed_at 时 --models-refresh 写远端/models。
+
+## 核心契约（必须实现）
+
+### 协议与模块
+- 入口：newapi_monitor.py（扩展 CLI/编排/锁）；新模块 newapi_models.py（Token 写 + models 风险面）。
+- **鉴权：** monitor 持有 Session / user_id / 一次性恢复；models 只注入 list/create/update/get-secret；/v1/models **永不** session 重登。
+- **不要** 新增无价值的 --once；无 models flag 时保持现网 **默认单轮 groups**。
+- 新增 CLI（互斥）：--models-preflight | --models-bootstrap | --models-refresh。
+- 组键：norm_group = str.strip；managed 名：newapi-monitor:g: + norm_group。
+- 用户 Token：**永不删除、永不 PUT**。
+
+### P0 行为
+1. **Hydration：** list_tokens_all 分页完整后，先对相关 Token get_token_secret，内存 hydrated 后再算 Missing；secret 临时失败 → coverage_unknown → **fail closed 不 create**。
+2. **inventory-suitable：** 绑组 + secret 可读 + 启用 + 未过期 + model_limits_enabled=false + allow_ips 适合 inventory；**仅**此可阻止 create managed；受限 Token 的 models **不得**标为全量成功快照。
+3. **分页 fail-closed：** has_more=True 必须续页；total 不足不 complete；incomplete 禁止 create；max_pages + 无进展保护。
+4. **reconcile：** create 带 group；未知 POST 结果禁止盲重 POST；managed 禁用/过期/错绑 → **仅 managed PUT 修复**（探针确认载荷）；返回 hydrated tokens_after。
+5. **门禁：** preflight 零写；需 seed Token；bootstrap 强制 preflight；refresh 无 bootstrap → exit≠0 零写。
+6. **ModelsStore：** 仅 models_latest.json + models_events.jsonl；schema 对齐 Sub2API（null vs []、失败保旧、逐组 checkpoint、full meta 含 **skipped**、bootstrap_completed_at）。
+7. **T-new：** MONITOR_MODELS_INCREMENTAL_ENABLE 默认 0；仅真正 added 且已 bootstrap；**ensure 仅 refresh_set** 非全量 G；T-new 部分失败 groups 仍 exit 0。
+8. **退出码：** bootstrap/refresh 时 failed>0 或 skipped>0 → ≠0；last_full_result={target,ok,failed,skipped}；target=ok+failed+skipped。
+9. **锁：** 默认 groups 非阻塞；bootstrap/refresh 有界等待 + 进程内有限重试。
+10. **systemd：** newapi-models-daily@：OnCalendar=*-*-* 00:00:00 Asia/Shanghai + RandomizedDelaySec=300 + TimeoutStartSec=600 + ExecStart --models-refresh；install **默认不 enable** daily。
+11. **安全：** 落盘/日志无完整 key/session/password。
+
+### 非目标
+- Sub2API 站 models 路径；botcf 强制 live bootstrap（须 preflight；实现可共用代码）
+- keys_index / 默认 keys_secrets / 自动删用户 Token / 00:30 backup timer
+- SQLite / sites.yaml / provider registry
+- 改变现网空 groups contract（空 object 失败、不覆盖旧快照）
+- 默认把缺快照并入每 5 分钟全量 models
+
+## Acceptance criteria
+1. CLI 暴露 --models-preflight / --models-bootstrap / --models-refresh；preflight 永不 create/写 models；**默认无 models flag 的 groups 单轮**在无 bootstrap 或增量关时：零 create、零 models 请求。
+2. hydration → inventory-suitable → Missing；list_tokens 分页 fail-closed；managed 名与 reconcile/修复符合 requirements；tokens_after 用于 models；用户 Token 不改删。
+3. 仅新增 models_latest + models_events；null/[]/失败保旧/checkpoint/full meta+skipped/bootstrap 标志正确。
+4. 触发器/auth 分域/T-new 范围/exit 码/锁/日更 unit 符合 requirements。
+5. 真实单测覆盖 P0 路径 + tests/test_newapi_monitor.py 与全仓相关测试仍绿；无密钥泄漏。
+
+## Verification plan
+1. gating: pytest tests/test_newapi_models.py tests/test_newapi_models_cli.py tests/test_newapi_monitor.py -q（及全 tests/ 若改动交叉）；输出 → {SCRATCH}/pytest.log。
+2. gating: 真实入口 newapi_monitor.py + 临时 env：
+   - preflight 成功/失败原因；断言 **无** POST /api/token/ create；{SCRATCH}/preflight.log
+   - 默认 groups 单轮 cold：零 create 零 /v1/models；{SCRATCH}/groups-default.log
+   - bootstrap×2：第二次 created=0；部分 models 失败保旧成功列表；{SCRATCH}/bootstrap.log
+   - refresh 无 bootstrap：exit≠0 零写；{SCRATCH}/refresh-gate.log
+   每路径至少跑 2 次，结果一致。
+3. gating: 静态检查 → {SCRATCH}/static-checks.log：增量默认 0；无 --once 新语义绑架；models 401 无 login；hydration 在 Missing 之前；T-new ensure 仅 refresh_set；daily unit 上海日历+300+600+models-refresh；skipped 在 full result。
+4. evidence: 可选 live torchai **仅 preflight**（有凭据时）→ {SCRATCH}/live-preflight.log；**不强制** live create/bootstrap 全站。
+5. evidence: secret-scan → {SCRATCH}/secret-scan.log。
+6. evidence: {SCRATCH}/hypothesis.md（契约矩阵）+ {SCRATCH}/token-contract.md（§6 探针）+ validation/review 笔记。
+
+## Implementation approach
+1. Hypothesis subagent：映射 requirements → 测试矩阵 → hypothesis.md。
+2. （门禁）只读 token 契约探针 → token-contract.md。
+3. TDD newapi_models.py：分页、hydration、inventory-suitable、reconcile、ensure、store、refresh。
+4. 串行接线 newapi_monitor.py：三 CLI、锁等待、T-new、auth 注入。
+5. systemd units + install 文档（不默认 enable models）。
+6. Validation + review subagent；修到 gating 全过。
+
+## Task checklist（完成时在 plan 中勾选）
+- [ ] Hypothesis + requirements 测试矩阵 → {SCRATCH}/hypothesis.md
+- [ ] Token 契约只读探针 → {SCRATCH}/token-contract.md（门禁）
+- [ ] TDD：list_tokens 分页 fail-closed + hydration + inventory-suitable + Missing
+- [ ] TDD：reconcile/ensure（未知 POST、managed 修复 mock、tokens_after、用户 Token 不动）
+- [ ] TDD：ModelsStore + refresh（null/[]、保旧、checkpoint、skipped/deadline、full meta）
+- [ ] 接线 CLI + 默认 groups 零写 + bootstrap/refresh 门禁 + T-new 范围 + 锁
+- [ ] daily unit + install 默认不 enable
+- [ ] 全量 pytest + 双次 CLI 模拟 + static + secret-scan；证据齐套
+
+## 风险
+- 并发改 newapi_monitor.py → CLI 单一 owner。
+- live create 写远端 Token → 目标完成以代码+测试+unit 为准，不强制生产 bootstrap。
+- 名称长度超限 → 按 requirements 改 hash 代次并文档声明。
+- 与 Sub2API 混淆 → 禁止共用 JWT 客户端 / 禁止混 DATA_DIR。
+
+开始执行。Deliver everything；用 todo 跟踪；验证通过后再标记 goal 完成。

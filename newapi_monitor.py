@@ -14,6 +14,7 @@ import re
 import sys
 import time
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -25,6 +26,8 @@ from monitor_storage import (
     BACKEND_NEWAPI,
     InstanceLock,
     SnapshotStore,
+    content_hash_groups,
+    load_latest,
     normalize_groups_dict,
     utc_now_iso,
     write_json_atomic,
@@ -37,10 +40,20 @@ LOG = logging.getLogger("newapi-monitor")
 SITE_ID_RE = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
 LOGIN_PATH = "/api/user/login"
 GROUPS_PATH = "/api/user/self/groups"
+TOKENS_PATH = "/api/token/"
+MODELS_PATH = "/v1/models"
 DEFAULT_CONNECT = 5.0
 DEFAULT_READ = 20.0
 APP_DEADLINE_SECONDS = 170.0
+MODELS_DEADLINE_SECONDS = 540.0
+MODELS_LOCK_WAIT_SECONDS = 30.0
+MODELS_LOCK_POLL_SECONDS = 1.0
 TRANSIENT_BACKOFF = 5.0
+# Token secret (/api/token/{id}/key) is sensitive and frequently 429s without Retry-After.
+SECRET_MIN_INTERVAL_SECONDS = 1.5
+MANAGEMENT_429_MAX_RETRIES = 8
+MANAGEMENT_429_DEFAULT_BACKOFF = 15.0
+MANAGEMENT_429_MAX_BACKOFF = 90.0
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 
@@ -50,10 +63,18 @@ class ConfigError(ValueError):
 
 
 class CollectError(RuntimeError):
-    def __init__(self, message: str, *, kind: str = "error", status_code: int | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        kind: str = "error",
+        status_code: int | None = None,
+        next_retry_at: str | None = None,
+    ) -> None:
         super().__init__(message)
         self.kind = kind
         self.status_code = status_code
+        self.next_retry_at = next_retry_at
 
 
 # ---------------------------------------------------------------------------
@@ -122,6 +143,7 @@ class MonitorConfig:
     connect_timeout_seconds: float = DEFAULT_CONNECT
     read_timeout_seconds: float = DEFAULT_READ
     proxy_url: str | None = None
+    models_incremental_enable: bool = False
     log_level: str = "INFO"
     project_root: Path = PROJECT_ROOT
     env_file: Path | None = None
@@ -192,6 +214,7 @@ def load_config(
     proxy = (get("MONITOR_PROXY_URL") or "").strip() or None
     require_header = _truthy(get("REQUIRE_NEW_API_USER_HEADER", "0") or "0")
     log_level = get("LOG_LEVEL", "INFO") or "INFO"
+    models_incremental = _truthy(get("MONITOR_MODELS_INCREMENTAL_ENABLE", "0") or "0")
 
     if env_file.exists():
         _check_credential_file_mode(env_file)
@@ -205,6 +228,7 @@ def load_config(
         connect_timeout_seconds=connect_timeout,
         read_timeout_seconds=read_timeout,
         proxy_url=proxy,
+        models_incremental_enable=models_incremental,
         log_level=log_level,
         project_root=root,
         env_file=env_file,
@@ -417,6 +441,11 @@ class NewApiClient:
         self.deadline = deadline
         self.user_id: int | None = None
         self._login_count = 0
+        self._auth_recovery_used = False
+        # In-memory only; never persisted. Avoids re-hitting /key for the same id
+        # when bootstrap preflight + ensure_coverage + post-create re-list rehydrate.
+        self._secret_cache: dict[str, str] = {}
+        self._last_secret_fetch_at = 0.0
 
     def remaining(self) -> float:
         if self.deadline is None:
@@ -483,6 +512,23 @@ class NewApiClient:
             domain=self.config.host,
             user_id=self.user_id if self.config.require_new_api_user_header else self.user_id,
         )
+
+    def ensure_auth(self, *, require_user_id: bool = False) -> None:
+        state = load_auth_state(self.config.auth_state_file, self.config.host)
+        restored = self.restore_auth(state)
+        if not restored or (require_user_id and not self.user_id):
+            self.login()
+        if require_user_id and not self.user_id:
+            raise CollectError("token management login missing user_id", kind="auth")
+
+    def recover_auth_once(self) -> None:
+        if self._auth_recovery_used:
+            raise CollectError("management authentication recovery exhausted", kind="auth")
+        self._auth_recovery_used = True
+        clear_auth_state(self.config.auth_state_file)
+        self.session.cookies.clear()
+        self.user_id = None
+        self.login()
 
     def login(self) -> None:
         if self._login_count >= 2:
@@ -571,6 +617,186 @@ class NewApiClient:
             headers["new-api-user"] = str(self.user_id)
         return headers
 
+    def _token_headers(self, *, json_body: bool = False) -> dict[str, str]:
+        if not self.user_id:
+            raise CollectError("token management requires positive user_id", kind="auth")
+        headers = {
+            "Accept": "application/json",
+            "User-Agent": USER_AGENT,
+            "Connection": "close",
+            "new-api-user": str(self.user_id),
+        }
+        if json_body:
+            headers["Content-Type"] = "application/json"
+        return headers
+
+    def _management_request(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: Mapping[str, Any] | None = None,
+        json_body: Mapping[str, Any] | None = None,
+        operation: str,
+        retry_429: bool = True,
+    ) -> dict[str, Any]:
+        rate_limit_attempts = 0
+        while True:
+            try:
+                response = self.session.request(
+                    method,
+                    f"{self.config.base_url}{path}",
+                    params=dict(params or {}),
+                    json=dict(json_body) if json_body is not None else None,
+                    headers=self._token_headers(json_body=json_body is not None),
+                    timeout=self._timeout(),
+                    allow_redirects=False,
+                )
+            except requests.Timeout as exc:
+                raise CollectError(f"{operation} timeout", kind="timeout") from exc
+            except requests.RequestException as exc:
+                raise CollectError(f"{operation} network failure", kind="network") from exc
+
+            if response.status_code in (301, 302, 303, 307, 308):
+                raise CollectError(
+                    f"{operation} redirect",
+                    kind="contract",
+                    status_code=response.status_code,
+                )
+            payload = _json_payload(response)
+            if response.status_code == 401 or _is_auth_business_failure(
+                response.status_code, payload
+            ):
+                if not self._auth_recovery_used:
+                    self.recover_auth_once()
+                    continue
+                raise CollectError(
+                    f"{operation} authentication failed after recovery",
+                    kind="auth",
+                    status_code=response.status_code,
+                )
+            if response.status_code == 429:
+                if not retry_429 or rate_limit_attempts >= MANAGEMENT_429_MAX_RETRIES:
+                    raise CollectError(
+                        operation + " rate limited",
+                        kind="rate_limit",
+                        status_code=429,
+                    )
+                rate_limit_attempts += 1
+                wait = _parse_retry_after(response)
+                if wait is None:
+                    wait = min(
+                        MANAGEMENT_429_DEFAULT_BACKOFF
+                        * (2 ** max(0, rate_limit_attempts - 1)),
+                        MANAGEMENT_429_MAX_BACKOFF,
+                    )
+                remaining = self.remaining()
+                if remaining <= 0.5:
+                    raise CollectError(
+                        operation + " rate limited",
+                        kind="rate_limit",
+                        status_code=429,
+                    )
+                wait = min(float(wait), max(0.1, remaining - 0.5))
+                LOG.warning(
+                    "site=%s %s rate limited; sleep=%.1fs attempt=%s/%s",
+                    self.config.site_id,
+                    operation,
+                    wait,
+                    rate_limit_attempts,
+                    MANAGEMENT_429_MAX_RETRIES,
+                )
+                self.sleep_fn(wait)
+                continue
+            if response.status_code == 408:
+                raise CollectError(operation + " timeout", kind="timeout", status_code=408)
+            if response.status_code >= 500:
+                raise CollectError(
+                    operation + " server failure",
+                    kind="server",
+                    status_code=response.status_code,
+                )
+            if response.status_code not in (200, 201):
+                raise CollectError(
+                    f"{operation} HTTP {response.status_code}",
+                    kind="error",
+                    status_code=response.status_code,
+                )
+            if not payload or payload.get("success") is not True:
+                # Remote business messages may echo keys or request fields.
+                raise CollectError(operation + " business failure", kind="contract", status_code=200)
+            if self.extract_session_cookie():
+                try:
+                    self.persist_auth()
+                except CollectError:
+                    pass
+            return payload
+
+    def list_tokens_page(self, page: int, page_size: int) -> dict[str, Any]:
+        return self._management_request(
+            "GET",
+            TOKENS_PATH,
+            params={"p": page, "size": page_size},
+            operation="token list",
+        )
+
+    def get_token_secret(self, token_id: Any) -> str:
+        cache_key = str(token_id).strip()
+        if not cache_key:
+            raise CollectError("token secret missing id", kind="contract", status_code=200)
+        cached = self._secret_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        # Pace plaintext key reads; TorchAI returns 429 without Retry-After when burst.
+        if self._last_secret_fetch_at > 0:
+            elapsed = self.monotonic_fn() - self._last_secret_fetch_at
+            if elapsed < SECRET_MIN_INTERVAL_SECONDS:
+                pause = SECRET_MIN_INTERVAL_SECONDS - elapsed
+                remaining = self.remaining()
+                if remaining > 0.2:
+                    self.sleep_fn(min(pause, max(0.0, remaining - 0.1)))
+
+        payload = self._management_request(
+            "POST",
+            f"/api/token/{cache_key}/key",
+            operation="token secret",
+        )
+        self._last_secret_fetch_at = self.monotonic_fn()
+        data = payload.get("data")
+        secret = data.get("key") if isinstance(data, Mapping) else None
+        if not isinstance(secret, str) or not secret.strip():
+            raise CollectError("token secret envelope invalid", kind="contract", status_code=200)
+        secret = secret.strip()
+        self._secret_cache[cache_key] = secret
+        return secret
+
+    def create_token(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        result = self._management_request(
+            "POST",
+            TOKENS_PATH,
+            json_body=payload,
+            operation="token create",
+        )
+        data = result.get("data")
+        return dict(data) if isinstance(data, Mapping) else {}
+
+    def update_token(
+        self,
+        payload: Mapping[str, Any],
+        *,
+        status_only: bool = False,
+    ) -> dict[str, Any]:
+        result = self._management_request(
+            "PUT",
+            TOKENS_PATH,
+            params={"status_only": "true"} if status_only else None,
+            json_body=payload,
+            operation="token update",
+        )
+        data = result.get("data")
+        return dict(data) if isinstance(data, Mapping) else {}
+
     def fetch_groups_raw(self) -> list[dict[str, Any]]:
         url = f"{self.config.base_url}{GROUPS_PATH}"
         try:
@@ -651,6 +877,514 @@ class NewApiClient:
             pass
 
 
+class ModelsApiClient:
+    """Cookie-independent API-key transport; it has no session-login capability."""
+
+    def __init__(
+        self,
+        config: MonitorConfig,
+        *,
+        session: requests.Session | None = None,
+    ) -> None:
+        self.config = config
+        self.session = session or requests.Session()
+        self.session.headers.update(
+            {
+                "Accept": "application/json",
+                "User-Agent": USER_AGENT,
+                "Connection": "close",
+            }
+        )
+        if config.proxy_url:
+            self.session.proxies.update({"http": config.proxy_url, "https": config.proxy_url})
+
+    def list_models(self, secret: str) -> list[str]:
+        try:
+            response = self.session.get(
+                f"{self.config.base_url}{MODELS_PATH}",
+                headers={
+                    "Accept": "application/json",
+                    "Authorization": f"Bearer {secret}",
+                    "User-Agent": USER_AGENT,
+                    "Connection": "close",
+                },
+                timeout=self.config.timeout,
+                allow_redirects=False,
+            )
+        except requests.Timeout as exc:
+            raise CollectError("models timeout", kind="timeout") from exc
+        except requests.RequestException as exc:
+            raise CollectError("models network failure", kind="network") from exc
+
+        status = response.status_code
+        if status in (401, 403):
+            raise CollectError(f"models HTTP {status}", kind="key_auth", status_code=status)
+        if status == 429:
+            retry_seconds = _parse_retry_after(response)
+            retry_at = None
+            if retry_seconds is not None:
+                retry_at = (
+                    datetime.now(timezone.utc) + timedelta(seconds=retry_seconds)
+                ).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+            raise CollectError(
+                "models HTTP 429",
+                kind="rate_limit",
+                status_code=429,
+                next_retry_at=retry_at,
+            )
+        if status == 408:
+            raise CollectError("models HTTP 408", kind="timeout", status_code=408)
+        if status >= 500:
+            raise CollectError(f"models HTTP {status}", kind="server", status_code=status)
+        if status != 200:
+            raise CollectError(f"models HTTP {status}", kind="error", status_code=status)
+
+        payload = _json_payload(response)
+        try:
+            import newapi_models as models_mod
+
+            return models_mod.parse_models_payload(payload)
+        except (TypeError, ValueError) as exc:
+            raise CollectError("models response contract invalid", kind="contract", status_code=200) from exc
+
+    def close(self) -> None:
+        try:
+            self.session.close()
+        except Exception:
+            pass
+
+
+def fetch_groups_with_recovery(
+    client: NewApiClient,
+    *,
+    deadline: float,
+    monotonic_fn: Callable[[], float],
+    sleep_fn: Callable[[float], None],
+) -> list[dict[str, Any]]:
+    transient_retried = False
+    while True:
+        try:
+            return client.fetch_groups_raw()
+        except CollectError as exc:
+            if exc.kind == "auth" and not client._auth_recovery_used:
+                client.recover_auth_once()
+                continue
+            if exc.kind in ("timeout", "server", "network", "rate_limit") and not transient_retried:
+                transient_retried = True
+                remaining = deadline - monotonic_fn()
+                if remaining <= 0:
+                    raise
+                sleep_fn(min(TRANSIENT_BACKOFF, remaining))
+                continue
+            raise
+
+
+def _list_tokens_all(client: NewApiClient) -> tuple[list[dict[str, Any]], bool]:
+    import newapi_models as models_mod
+
+    return models_mod.list_tokens_all(client.list_tokens_page)
+
+
+def _models_preflight(
+    client: NewApiClient,
+    models_client: ModelsApiClient,
+    *,
+    deadline: float,
+    monotonic_fn: Callable[[], float],
+    sleep_fn: Callable[[float], None],
+) -> tuple[bool, dict[str, Any]]:
+    import newapi_models as models_mod
+
+    checks: dict[str, Any] = {
+        "groups_ok": False,
+        "groups_count": 0,
+        "paging_complete": False,
+        "tokens_count": 0,
+        "seed_secret_readable": False,
+        "models_envelope_ok": False,
+    }
+    failures: list[str] = []
+    try:
+        groups = fetch_groups_with_recovery(
+            client,
+            deadline=deadline,
+            monotonic_fn=monotonic_fn,
+            sleep_fn=sleep_fn,
+        )
+        checks["groups_ok"] = bool(groups)
+        checks["groups_count"] = len(groups)
+    except CollectError as exc:
+        failures.append(f"groups_{exc.kind}")
+        return False, {"ok": False, "checks": checks, "failures": failures}
+
+    tokens, complete = _list_tokens_all(client)
+    checks["paging_complete"] = complete
+    checks["tokens_count"] = len(tokens)
+    if not complete:
+        failures.append("token_paging_incomplete")
+    if not tokens:
+        failures.append("seed_token_missing")
+    if failures:
+        return False, {"ok": False, "checks": checks, "failures": failures}
+
+    # Only need one readable seed secret for envelope check; stop early to
+    # avoid burning the provider's /key rate limit before bootstrap ensure.
+    seed_secret: str | None = None
+    last_secret_kind: str | None = None
+    for token in sorted(tokens, key=lambda item: str(item.get("id", ""))):
+        token_id = token.get("id")
+        if token_id is None or not models_mod.norm_id(token_id):
+            continue
+        try:
+            candidate = client.get_token_secret(token_id)
+        except CollectError as exc:
+            last_secret_kind = exc.kind
+            continue
+        except Exception as exc:
+            last_secret_kind = type(exc).__name__.lower()
+            continue
+        if isinstance(candidate, str) and candidate.strip():
+            seed_secret = candidate.strip()
+            break
+    if seed_secret is None:
+        failures.append(
+            f"seed_secret_unreadable:{last_secret_kind}"
+            if last_secret_kind
+            else "seed_secret_unreadable"
+        )
+        return False, {"ok": False, "checks": checks, "failures": failures}
+    checks["seed_secret_readable"] = True
+
+    try:
+        model_ids = models_client.list_models(seed_secret)
+        checks["models_envelope_ok"] = isinstance(model_ids, list)
+        checks["seed_model_count"] = len(model_ids)
+    except CollectError as exc:
+        failures.append(f"models_{exc.kind}")
+    ok = not failures and checks["models_envelope_ok"] is True
+    return ok, {"ok": ok, "checks": checks, "failures": failures}
+
+
+def acquire_models_lock(
+    lock: InstanceLock,
+    *,
+    wait_seconds: float = MODELS_LOCK_WAIT_SECONDS,
+    retries: int = 2,
+) -> float:
+    total_wait = 0.0
+    last_error: RuntimeError | None = None
+    attempts = max(1, retries)
+    per_attempt = max(0.0, wait_seconds) / attempts
+    for _attempt in range(attempts):
+        try:
+            total_wait += lock.acquire_wait(
+                per_attempt,
+                poll_interval=MODELS_LOCK_POLL_SECONDS,
+            )
+            return total_wait
+        except RuntimeError as exc:
+            last_error = exc
+    raise last_error or RuntimeError("models lock unavailable")
+
+
+def run_models_preflight(
+    config: MonitorConfig,
+    *,
+    monotonic_fn: Callable[[], float] | None = None,
+    sleep_fn: Callable[[float], None] | None = None,
+) -> int:
+    mono = monotonic_fn or time.monotonic
+    sleep = sleep_fn or time.sleep
+    deadline = mono() + APP_DEADLINE_SECONDS
+    lock = InstanceLock(config.lock_file)
+    client = NewApiClient(
+        config,
+        monotonic_fn=mono,
+        sleep_fn=sleep,
+        deadline=deadline,
+    )
+    models_client = ModelsApiClient(config)
+    try:
+        try:
+            lock.acquire()
+        except RuntimeError as exc:
+            LOG.error("site=%s preflight lock unavailable: %s", config.site_id, exc)
+            return 2
+        try:
+            client.ensure_auth(require_user_id=True)
+            ok, result = _models_preflight(
+                client,
+                models_client,
+                deadline=deadline,
+                monotonic_fn=mono,
+                sleep_fn=sleep,
+            )
+            print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+            return 0 if ok else 1
+        except CollectError as exc:
+            LOG.error("site=%s preflight kind=%s: %s", config.site_id, exc.kind, exc)
+            return 1
+        finally:
+            lock.release()
+    finally:
+        models_client.close()
+        client.close()
+
+
+def run_models_full(
+    config: MonitorConfig,
+    *,
+    bootstrap: bool,
+    monotonic_fn: Callable[[], float] | None = None,
+    sleep_fn: Callable[[float], None] | None = None,
+) -> int:
+    import newapi_models as models_mod
+
+    mono = monotonic_fn or time.monotonic
+    sleep = sleep_fn or time.sleep
+    gate_store = models_mod.ModelsStore(config.data_dir, config.site_id, models_path=MODELS_PATH)
+    if not bootstrap and not gate_store.load().get("bootstrap_completed_at"):
+        LOG.error("site=%s refresh requires a completed bootstrap", config.site_id)
+        return 1
+
+    lock = InstanceLock(config.lock_file)
+    try:
+        acquire_models_lock(lock)
+    except RuntimeError as exc:
+        LOG.error("site=%s models lock unavailable: %s", config.site_id, exc)
+        return 2
+
+    store = models_mod.ModelsStore(config.data_dir, config.site_id, models_path=MODELS_PATH)
+    if not bootstrap and not store.load().get("bootstrap_completed_at"):
+        LOG.error("site=%s refresh bootstrap state changed while waiting for lock", config.site_id)
+        lock.release()
+        return 1
+
+    started = mono()
+    deadline = started + MODELS_DEADLINE_SECONDS
+    client = NewApiClient(
+        config,
+        monotonic_fn=mono,
+        sleep_fn=sleep,
+        deadline=started + max(APP_DEADLINE_SECONDS, MODELS_DEADLINE_SECONDS),
+    )
+    models_client = ModelsApiClient(config)
+    phase = "bootstrap" if bootstrap else "refresh"
+    try:
+        try:
+            client.ensure_auth(require_user_id=True)
+            if bootstrap:
+                ok, preflight = _models_preflight(
+                    client,
+                    models_client,
+                    deadline=deadline,
+                    monotonic_fn=mono,
+                    sleep_fn=sleep,
+                )
+                if not ok:
+                    print(json.dumps(preflight, ensure_ascii=False, indent=2, sort_keys=True))
+                    return 1
+
+            groups = fetch_groups_with_recovery(
+                client,
+                deadline=deadline,
+                monotonic_fn=mono,
+                sleep_fn=sleep,
+            )
+            SnapshotStore(
+                config.data_dir,
+                config.site_id,
+                backend=BACKEND_NEWAPI,
+            ).persist_success(groups)
+
+            ensure_result = models_mod.ensure_coverage(
+                groups,
+                list_tokens_fn=lambda: _list_tokens_all(client),
+                get_token_secret_fn=client.get_token_secret,
+                create_token_fn=client.create_token,
+                update_token_fn=client.update_token,
+            )
+            blocked_groups = {
+                models_mod.norm_group(group): "coverage_unknown"
+                for group in ensure_result.coverage_unknown
+            }
+            blocked_groups.update(
+                {
+                    models_mod.norm_group(failure["group"]): failure["error"]
+                    for failure in ensure_result.failures
+                    if failure.get("group") not in (None, "*")
+                }
+            )
+            if ensure_result.paging_incomplete:
+                blocked_groups.update(
+                    {
+                        models_mod.norm_group(group.get("id")): "paging_incomplete"
+                        for group in groups
+                    }
+                )
+            refresh_result = models_mod.refresh_models_for_groups(
+                groups,
+                ensure_result.tokens,
+                store,
+                models_client.list_models,
+                source=phase,
+                blocked_groups=blocked_groups,
+                deadline=deadline,
+                time_fn=mono,
+            )
+            store.update_full_meta(
+                target=refresh_result.target_count,
+                ok=refresh_result.ok_count,
+                failed=refresh_result.failed_count,
+                skipped=refresh_result.skipped_count,
+                bootstrap=(
+                    bootstrap
+                    and not ensure_result.failures
+                    and not ensure_result.paging_incomplete
+                ),
+            )
+            summary = {
+                "site_id": config.site_id,
+                "phase": phase,
+                "created": ensure_result.created,
+                "updated": ensure_result.updated,
+                "paging_incomplete": ensure_result.paging_incomplete,
+                "coverage_unknown": list(ensure_result.coverage_unknown),
+                "target": refresh_result.target_count,
+                "ok": refresh_result.ok_count,
+                "failed": refresh_result.failed_count,
+                "skipped": refresh_result.skipped_count,
+            }
+            print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
+            if (
+                ensure_result.paging_incomplete
+                or ensure_result.failures
+                or refresh_result.failed_count > 0
+                or refresh_result.skipped_count > 0
+            ):
+                return 1
+            return 0
+        except (CollectError, ValueError) as exc:
+            kind = getattr(exc, "kind", "contract")
+            LOG.error("site=%s phase=%s kind=%s: %s", config.site_id, phase, kind, exc)
+            return 1
+    finally:
+        models_client.close()
+        client.close()
+        lock.release()
+
+
+def _run_incremental_models(
+    config: MonitorConfig,
+    client: NewApiClient,
+    groups: list[dict[str, Any]],
+    previous_groups: Mapping[str, Any] | None,
+) -> None:
+    import newapi_models as models_mod
+
+    if not config.models_incremental_enable:
+        return
+    models_store = models_mod.ModelsStore(config.data_dir, config.site_id, models_path=MODELS_PATH)
+    if not models_store.load().get("bootstrap_completed_at"):
+        return
+
+    prior = previous_groups.get("groups") if isinstance(previous_groups, Mapping) else None
+    previous_valid = (
+        isinstance(previous_groups, Mapping)
+        and previous_groups.get("schema_version") == 1
+        and previous_groups.get("site_id") == config.site_id
+        and previous_groups.get("backend") == BACKEND_NEWAPI
+        and isinstance(prior, list)
+        and bool(prior)
+        and type(previous_groups.get("count")) is int
+        and previous_groups.get("count") == len(prior)
+        and isinstance(previous_groups.get("content_hash"), str)
+    )
+    if previous_valid:
+        try:
+            previous_valid = previous_groups.get("content_hash") == content_hash_groups(prior)
+        except (KeyError, TypeError, ValueError):
+            previous_valid = False
+    if not previous_valid:
+        LOG.warning(
+            "site=%s phase=incremental skipped: no valid previous groups snapshot",
+            config.site_id,
+        )
+        return
+    assert isinstance(prior, list)
+    prior_list = prior
+    old_ids = {
+        models_mod.norm_group(group.get("id"))
+        for group in prior_list
+        if isinstance(group, Mapping) and group.get("id") is not None
+    }
+    added = [
+        group
+        for group in groups
+        if models_mod.norm_group(group.get("id")) not in old_ids
+    ]
+    refresh_set = [
+        group
+        for group in added
+        if models_mod.should_attempt_now(models_store.get_group(group.get("id")))
+    ]
+    if not refresh_set:
+        return
+
+    models_client = ModelsApiClient(config)
+    try:
+        ensure_result = models_mod.ensure_coverage(
+            refresh_set,
+            list_tokens_fn=lambda: _list_tokens_all(client),
+            get_token_secret_fn=client.get_token_secret,
+            create_token_fn=client.create_token,
+            update_token_fn=client.update_token,
+        )
+        blocked_groups = {
+            models_mod.norm_group(group): "coverage_unknown"
+            for group in ensure_result.coverage_unknown
+        }
+        blocked_groups.update(
+            {
+                models_mod.norm_group(failure["group"]): failure["error"]
+                for failure in ensure_result.failures
+                if failure.get("group") not in (None, "*")
+            }
+        )
+        if ensure_result.paging_incomplete:
+            blocked_groups.update(
+                {
+                    models_mod.norm_group(group.get("id")): "paging_incomplete"
+                    for group in refresh_set
+                }
+            )
+        refresh_result = models_mod.refresh_models_for_groups(
+            refresh_set,
+            ensure_result.tokens,
+            models_store,
+            models_client.list_models,
+            source="incremental",
+            blocked_groups=blocked_groups,
+        )
+        models_store.set_incremental_at()
+        LOG.info(
+            "site=%s phase=incremental target=%d ok=%d failed=%d created=%d",
+            config.site_id,
+            refresh_result.target_count,
+            refresh_result.ok_count,
+            refresh_result.failed_count,
+            ensure_result.created,
+        )
+    except Exception as exc:
+        LOG.error(
+            "site=%s phase=incremental failed kind=%s",
+            config.site_id,
+            getattr(exc, "kind", type(exc).__name__),
+        )
+    finally:
+        models_client.close()
+
+
 # ---------------------------------------------------------------------------
 # Collect once
 # ---------------------------------------------------------------------------
@@ -684,58 +1418,14 @@ def run_collect(
 
     try:
         try:
-            state = load_auth_state(config.auth_state_file, config.host)
-            has_auth = client.restore_auth(state)
-            if not has_auth:
-                client.login()
-
-            groups: list[dict[str, Any]] | None = None
-            last_err: CollectError | None = None
-            auth_recovered = False
-            transient_retried = False
-
-            while True:
-                try:
-                    groups = client.fetch_groups_raw()
-                    break
-                except CollectError as exc:
-                    last_err = exc
-                    LOG.error(
-                        "site=%s fetch kind=%s status=%s: %s",
-                        config.site_id,
-                        exc.kind,
-                        exc.status_code,
-                        exc,
-                    )
-                    if exc.kind == "auth" and not auth_recovered:
-                        auth_recovered = True
-                        clear_auth_state(config.auth_state_file)
-                        client.session.cookies.clear()
-                        client.user_id = None
-                        try:
-                            client.login()
-                        except CollectError as login_exc:
-                            LOG.error(
-                                "site=%s re-login kind=%s: %s",
-                                config.site_id,
-                                login_exc.kind,
-                                login_exc,
-                            )
-                            return 1
-                        continue
-                    if exc.kind in ("timeout", "server", "network", "rate_limit") and not transient_retried:
-                        transient_retried = True
-                        delay = TRANSIENT_BACKOFF
-                        rem = deadline - mono()
-                        if rem <= 0:
-                            return 1
-                        sleep(min(delay, rem))
-                        continue
-                    # captcha/region/contract/permanent/auth after recovery
-                    return 1
-
-            if groups is None:
-                return 1
+            client.ensure_auth()
+            groups = fetch_groups_with_recovery(
+                client,
+                deadline=deadline,
+                monotonic_fn=mono,
+                sleep_fn=sleep,
+            )
+            previous_latest = load_latest(store.latest_path)
 
             try:
                 result = store.persist_success(groups)
@@ -757,6 +1447,7 @@ def run_collect(
                 result.modified,
                 result.content_hash[:19] + "…",
             )
+            _run_incremental_models(config, client, groups, previous_latest)
             return 0
         except CollectError as exc:
             LOG.error(
@@ -781,6 +1472,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="New-API legacy session group collector")
     parser.add_argument("--env-file", type=Path, required=True, help="path to site env file")
     parser.add_argument("--validate", action="store_true", help="validate config only")
+    models = parser.add_mutually_exclusive_group()
+    models.add_argument(
+        "--models-preflight",
+        action="store_true",
+        help="read-only token and models contract check",
+    )
+    models.add_argument(
+        "--models-bootstrap",
+        action="store_true",
+        help="explicitly ensure token coverage and initialize model snapshots",
+    )
+    models.add_argument(
+        "--models-refresh",
+        action="store_true",
+        help="refresh model snapshots after bootstrap",
+    )
     return parser.parse_args(argv)
 
 
@@ -807,6 +1514,12 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     try:
+        if args.models_preflight:
+            return run_models_preflight(config)
+        if args.models_bootstrap:
+            return run_models_full(config, bootstrap=True)
+        if args.models_refresh:
+            return run_models_full(config, bootstrap=False)
         return run_collect(config)
     except CollectError as exc:
         LOG.error("site=%s collect kind=%s: %s", config.site_id, exc.kind, exc)

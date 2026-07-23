@@ -1,0 +1,102 @@
+bundle:
+  id: zhongzhuan-contracts
+  version: 1
+  status: draft
+  owners:
+    - repository-maintainers
+  last_reviewed: "2026-07-22"
+  draft_root: docs/drafts/specs/contracts
+  frozen_root: "docs/02 specs/contracts"
+  governance_root: "docs/01 governance"
+
+compatibility:
+  unknown_schema_version: reject
+  unknown_backend: reject
+  mismatched_site_id: reject
+  additive_optional_fields: allowed_after_schema_and_reader_update
+  legacy_write_on_read: forbidden
+
+events_dedup:
+  groups_newapi_v1: tail_after_hash
+  groups_sub2api_legacy: historical_hash_scan
+  models_v1: at_least_once
+
+contracts:
+  - id: storage/sub2api-groups-legacy
+    status: draft
+    applies_to: [sub2api]
+    spec: storage.md
+    required_artifacts: [schema, hash_vectors, transition_vectors]
+
+  - id: storage/newapi-groups-v1
+    status: draft
+    applies_to: [newapi-legacy]
+    spec: storage.md
+    required_artifacts: [schema, hash_vectors, transition_vectors]
+
+  - id: storage/models-v1
+    status: draft
+    applies_to: [sub2api, newapi-legacy]
+    spec: storage.md
+    required_artifacts: [schema, hash_vectors, legacy_migration_vectors]
+
+  - id: storage/auth-behavior-v1
+    status: draft
+    applies_to: [sub2api, newapi-legacy]
+    public_field_schema: false
+    spec: storage.md
+
+  - id: cli/sub2api-v1
+    status: draft
+    applies_to: [sub2api]
+    spec: cli.md
+    required_artifacts: [mode_matrix, side_effect_tests]
+
+  - id: cli/newapi-legacy-v1
+    status: draft
+    applies_to: [newapi-legacy]
+    spec: cli.md
+    required_artifacts: [mode_matrix, side_effect_tests]
+
+  - id: safety/remote-mutation-v1
+    status: draft
+    applies_to: [sub2api, newapi-legacy]
+    spec: remote-mutation.md
+    required_artifacts: [state_vectors, pagination_vectors, identity_vectors]
+
+  - id: provider/sub2api-v1
+    status: planned
+    applies_to: [sub2api]
+    spec: provider-profiles.md
+
+  - id: provider/newapi-legacy-groups-v1
+    status: planned
+    applies_to: [newapi-legacy]
+    spec: provider-profiles.md
+
+  - id: provider/torchai-rc21-models-v1
+    status: planned
+    applies_to: [newapi-legacy]
+    spec: provider-profiles.md
+
+  - id: config/sub2api-v1
+    status: planned
+    applies_to: [sub2api]
+    spec: config.md
+
+  - id: config/newapi-legacy-v1
+    status: planned
+    applies_to: [newapi-legacy]
+    spec: config.md
+
+  - id: deployment/systemd-v1
+    status: draft
+    applies_to: [sub2api, newapi-legacy]
+    spec: deployment-security.md
+
+evidence_precedence:
+  - frozen_machine_contract
+  - matching_contract_tests_and_vectors
+  - current_implementation
+  - primary_requirements_or_architecture
+  - inventory_review_or_historical_reference

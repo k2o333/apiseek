@@ -1,0 +1,13 @@
+[Unit]
+Description=Run New-API daily model inventory refresh for %i
+
+[Timer]
+OnCalendar=*-*-* 00:00:00 Asia/Shanghai
+RandomizedDelaySec=300
+Persistent=true
+AccuracySec=1s
+Unit=newapi-models-daily@%i.service
+
+[Install]
+WantedBy=timers.target
+

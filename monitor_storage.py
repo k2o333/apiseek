@@ -12,6 +12,7 @@ import json
 import logging
 import math
 import os
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -87,8 +88,14 @@ def normalize_groups_dict(data: Mapping[str, Any]) -> list[dict[str, Any]]:
     if not isinstance(data, Mapping) or not data:
         raise ValueError("groups data must be a non-empty object")
     groups: list[dict[str, Any]] = []
+    normalized_names: set[str] = set()
     for name, info in data.items():
-        key = str(name)
+        key = str(name).strip()
+        if not key:
+            raise ValueError("group name must be non-empty after trimming")
+        if key in normalized_names:
+            raise ValueError(f"duplicate normalized group name {key!r}")
+        normalized_names.add(key)
         if not isinstance(info, Mapping):
             raise ValueError(f"group {key!r} value must be object")
         ratio = parse_ratio(info.get("ratio"))
@@ -374,6 +381,10 @@ class InstanceLock:
         try:
             fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError as exc:
+            try:
+                self._fh.close()
+            finally:
+                self._fh = None
             if exc.errno in (errno.EACCES, errno.EAGAIN):
                 raise RuntimeError(f"another monitor instance holds the lock: {self.path}") from exc
             raise
@@ -381,6 +392,30 @@ class InstanceLock:
         self._fh.truncate()
         self._fh.write(f"{os.getpid()}\n")
         self._fh.flush()
+
+    def acquire_wait(
+        self,
+        wait_seconds: float,
+        *,
+        poll_interval: float = 1.0,
+        time_fn: Any = None,
+        sleep_fn: Any = None,
+    ) -> float:
+        """Acquire with a bounded wait while preserving nonblocking acquire()."""
+        clock = time_fn or time.monotonic
+        sleep = sleep_fn or time.sleep
+        started = clock()
+        deadline = started + max(0.0, wait_seconds)
+        interval = max(0.01, poll_interval)
+        while True:
+            try:
+                self.acquire()
+                return max(0.0, clock() - started)
+            except RuntimeError:
+                now = clock()
+                if now >= deadline:
+                    raise
+                sleep(min(interval, max(0.0, deadline - now)))
 
     def release(self) -> None:
         if self._fh is not None:
