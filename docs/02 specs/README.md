@@ -10,7 +10,7 @@
 
 | 类别 | 文件 | 当前状态 | 冻结对象 |
 |---|---|---|---|
-| Storage | [storage.md](./contracts/storage.md) | draft | latest/events、hash、失败保旧、legacy reader |
+| Storage | [storage.md](./contracts/storage.md) | draft | latest/events、hash、失败保旧、legacy reader、invite_latest |
 | CLI | [cli.md](./contracts/cli.md) | draft | mode、副作用、锁、退出码 |
 | Remote mutation | [remote-mutation.md](./contracts/remote-mutation.md) | draft | managed identity、coverage、fail closed |
 | Provider | [provider-profiles.md](./contracts/provider-profiles.md) | planned | 已探活 endpoint/envelope/capability |

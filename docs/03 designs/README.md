@@ -11,6 +11,7 @@
 | Sub2API models | [sub2api-models.md](./sub2api-models.md) | `sub2api_models.py` |
 | New-API legacy groups | [newapi-monitor.md](./newapi-monitor.md) | `newapi_monitor.py`、`monitor_storage.py` |
 | New-API legacy models | [newapi-models.md](./newapi-models.md) | `newapi_models.py` |
+| Invite links | [invite-links.md](./invite-links.md) | `invite_links.py` |
 
 ## 设计与契约的关系
 
@@ -29,6 +30,7 @@ systemd timer -> per-site oneshot CLI -> provider HTTP
                                       -> data/<id>/auth cache
                                       -> groups latest/events
                                       -> models latest/events (opt-in)
+                                      -> invite_latest.json (opt-in CLI)
 ```
 
-共同原则：每站配置与数据隔离；生产使用 timer + oneshot；groups 高频、models 低频；远端写默认关闭；失败不覆盖最后成功业务快照；同站任务通过 `monitor.lock` 互斥。
+共同原则：每站配置与数据隔离；生产使用 timer + oneshot；groups 高频、models 低频；邀请链接独立 CLI（默认 14 天 TTL，base_url 变更立即刷新）；远端写默认关闭；失败不覆盖最后成功业务快照；同站任务通过 `monitor.lock` 互斥。

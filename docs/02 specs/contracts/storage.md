@@ -2,7 +2,7 @@
 
 > Publication：formal
 > Status：draft
-> Contract IDs：`storage/sub2api-groups-legacy`、`storage/newapi-groups-v1`、`storage/models-v1`、`storage/auth-behavior-v1`
+> Contract IDs：`storage/sub2api-groups-legacy`、`storage/newapi-groups-v1`、`storage/models-v1`、`storage/auth-behavior-v1`、`storage/invite-link-v1`
 
 本文件定义拟冻结的持久化不变量。状态为 draft 时，它是实现收敛目标，不是“当前所有 writer 已满足”的声明。当前差异见 [实现设计索引](../../03%20designs/README.md)。
 
@@ -242,7 +242,54 @@ Auth cache 不进入公共字段级 schema，只冻结：
 4. corrupt/unknown cache 安全丢弃并重新认证；
 5. schema 演进可以令旧 cache 一次失效，但不能错站复用或泄密。
 
-## 6. 冻结所需 artifacts
+## 6. `storage/invite-link-v1`
+
+> Status：draft  
+> 路径：`{data_dir}/invite_latest.json`  
+> applies_to：sub2api、newapi-legacy
+
+邀请链接是**可分享业务快照**，不是 JWT/session。mode 允许 `0644`；禁止写入 groups/models latest/events，也禁止附带 password、access_token、refresh_token、session 或完整 API Key。
+
+### 6.1 Envelope（schema_version=1）
+
+latest 必须包含：
+
+```text
+schema_version=1
+site_id
+backend          # "sub2api" | "newapi"
+base_url         # HTTPS origin，无 path/query/fragment，无尾 /
+aff_code         # 非空、trim 后无空白
+invite_link      # 必须精确等于 base_url + "/register?aff=" + aff_code
+fetched_at       # UTC RFC3339 秒精度 Z
+checked_at       # UTC RFC3339 秒精度 Z
+ttl_seconds      # 正整数；默认 1209600（14 天）
+```
+
+第一版**不写** invite events JSONL。
+
+### 6.2 拼装与远端源
+
+| backend | 拉码 | invite_link |
+|---|---|---|
+| sub2api | `GET /api/v1/user/aff` → `data.aff_code` | `{base_url}/register?aff={aff_code}` |
+| newapi | `GET /api/user/self` 的 `data.aff_code`，或 `GET /api/user/aff` | 同上 |
+
+### 6.3 刷新策略
+
+1. **base_url 变化**（与当前 config 规范化 origin 比较）：必须立即远端重拉并重写 `invite_link`；禁止只改前缀而不校验码，也禁止继续复用旧 `base_url` 的 link。
+2. **base_url 未变**：若 `checked_at` 距今不足 `ttl_seconds` 且 envelope 合法，可跳过远端（TTL 命中）；否则远端重拉。
+3. 显式 force（CLI `--force`）忽略 TTL，仍受 base_url 规则约束。
+4. 远端或 contract 失败：**禁止**用空/残缺结果覆盖已有合法 latest。
+5. reader 必须拒绝：未知 `schema_version`、错 `site_id`、错 `backend`、`aff_code` 非法、`invite_link` 与拼装规则不一致。
+
+### 6.4 Non-goals
+
+- 不进入 groups timer 默认路径；独立 CLI oneshot。
+- 不把 aff 当作 auth cache（不要求 0600）。
+- 不承诺跨站聚合文件。
+
+## 7. 冻结所需 artifacts
 
 | Contract | 必需 artifacts |
 |---|---|
@@ -250,5 +297,6 @@ Auth cache 不进入公共字段级 schema，只冻结：
 | New-API groups v1 | schema、ratio/null、Unicode、A-B-A、半行和崩溃窗口 vectors |
 | Models v1 | schema、顺序/重复/空白、null/empty、malformed id、失败保旧 vectors |
 | Models migration | legacy fixture、幂等、备份/回滚、无伪 event vectors |
+| Invite link v1 | envelope 识别、base_url 失效、TTL 跳过、失败保旧 vectors（冻结前补齐） |
 
 完整 JSON 示例必须从 vectors 生成或由 schema 校验，禁止散文和实现各维护一套互相漂移的字段表。

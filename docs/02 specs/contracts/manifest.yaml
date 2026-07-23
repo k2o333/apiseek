@@ -55,6 +55,13 @@ contracts:
     public_field_schema: false
     spec: storage.md
 
+  - id: storage/invite-link-v1
+    status: draft
+    owners: [repository-maintainers]
+    last_reviewed: "2026-07-23"
+    applies_to: [sub2api, newapi-legacy]
+    spec: storage.md
+
   - id: cli/sub2api-v1
     status: draft
     owners: [repository-maintainers]

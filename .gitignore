@@ -2,9 +2,12 @@
 sites/*.env
 sites/*.env.*
 !sites/*.env.example
-.venv/
 data/
 __pycache__/
 *.pyc
 *.tmp.*
 monitor.lock
+
+# Dotfiles / dot-directories (e.g. .venv, .tmp, .pytest_cache)
+.*
+!.gitignore

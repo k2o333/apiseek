@@ -68,6 +68,7 @@ data/<site-id>/
   groups_events.jsonl
   models_latest.json               # 可选；bootstrap 后
   models_events.jsonl
+  invite_latest.json               # 可选；invite_links.py
   monitor.lock
 sub2api-monitor-once@.{service,timer}
 sub2api-models-daily@.{service,timer}  # 模型日更（默认不 enable）
@@ -75,6 +76,16 @@ newapi-monitor-once@.{service,timer}
 newapi-models-daily@.{service,timer}  # 模型日更（默认不 enable）
 sub2api-monitor@.service           # 旧 simple 常驻（回滚用）
 ```
+
+### 邀请链接（独立 CLI）
+
+```bash
+.venv/bin/python invite_links.py --env-file sites/pinaic.env --validate
+.venv/bin/python invite_links.py --env-file sites/pinaic.env          # TTL 内可跳过远端
+.venv/bin/python invite_links.py --env-file sites/botcf.env --force   # 强制重拉
+```
+
+落盘 `data/<site>/invite_latest.json`。`MONITOR_BASE_URL` 变化立即重写；否则默认 14 天校验一次。契约 draft：`storage/invite-link-v1`。设计见 [docs/03 designs/invite-links.md](docs/03%20designs/invite-links.md)。
 
 第一版**不使用** SQLite、`sites.yaml`、Prometheus 或独立告警服务；**不做**应用内 Supervisor / 常驻多线程。
 

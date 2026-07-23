@@ -30,7 +30,8 @@ cd /root/projects/zhongzhuan
 | 运维入口 / 怎么跑 | [README.md](README.md) |
 | 文档治理 / 权威顺序 | [docs/01 governance/](docs/01%20governance/) |
 | 契约 / 兼容边界 | [docs/02 specs/](docs/02%20specs/) |
-| 当前实现设计（Sub2API / New-API / models） | [docs/03 designs/](docs/03%20designs/) |
+| 当前实现设计（Sub2API / New-API / models / invite） | [docs/03 designs/](docs/03%20designs/) |
+| 邀请链接 CLI | [docs/03 designs/invite-links.md](docs/03%20designs/invite-links.md) · `invite_links.py` |
 | 站级说明 | [docs/websites/](docs/websites/) |
 | Sub2API 监控 skill | [skills/aiapibank-monitor-groups/SKILL.md](skills/aiapibank-monitor-groups/SKILL.md) |
 | 鉴权探活 skill | [skills/aiapibank-inspect-auth/SKILL.md](skills/aiapibank-inspect-auth/SKILL.md) |
